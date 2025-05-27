@@ -17,29 +17,35 @@ function segment_signature(f, a, b, m)
     sig = Vector{T}(undef, total_terms)
     idx = 1
 
-    # Zeroth level is always 1 (the empty word)
-    sig[idx] = one(T)
+    sig[idx] = one(T)  # Zeroth level
     idx += 1
 
-    previous = sig[1:1]
-
+    prevlen = 1
     for level in 1:m
-        current = _segment_level(displacement, level, previous)
-        sig[idx:idx+length(current)-1] = current
-        previous = view(sig, idx:idx+length(current)-1)
-        idx += length(current)
+        curlen = d^level
+        current = view(sig, idx:idx+curlen-1)
+        _segment_level!(current, displacement, level, view(sig, idx - prevlen:idx - 1))
+        idx += curlen
+        prevlen = curlen
     end
 
     return sig[2:end]
 end
 
-function _segment_level(displacement::AbstractVector{T}, m::Int, previous::AbstractVector{T}) where T
-    return vec((displacement / m) * previous')
+function _segment_level!(out::AbstractVector{T}, Δ::AbstractVector{T}, m::Int, previous::AbstractVector{T}) where T
+    d, n = length(Δ), length(previous)
+    scale = inv(T(m))
+    @inbounds for i in 1:d
+        for j in 1:n
+            out[(i - 1) * n + j] = scale * Δ[i] * previous[j]
+        end
+    end
 end
+
 
 f(t) = [t, 2t]
 a, b = 0.0, 1.0
-m = 10
+m = 20
 
 sig = segment_signature(f, a, b, m)
 # @show sig
