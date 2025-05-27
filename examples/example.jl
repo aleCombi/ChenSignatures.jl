@@ -11,17 +11,20 @@ function segment_signature(f, a, b, m)
     d = length(displacement)
     T = eltype(displacement)
 
-    # Total number of signature terms up to level m:
-    total_terms = div(d^(m + 1) - 1, d - 1)
+    # Total number of signature terms from level 1 to m:
+    total_terms = div(d^(m + 1) - d, d - 1)
 
     sig = Vector{T}(undef, total_terms)
     idx = 1
 
-    sig[idx] = one(T)  # Zeroth level
-    idx += 1
+    # First level
+    curlen = d
+    current = view(sig, idx:idx+curlen-1)
+    current .= displacement
+    idx += curlen
+    prevlen = curlen
 
-    prevlen = 1
-    for level in 1:m
+    for level in 2:m
         curlen = d^level
         current = view(sig, idx:idx+curlen-1)
         _segment_level!(current, displacement, level, view(sig, idx - prevlen:idx - 1))
@@ -29,7 +32,7 @@ function segment_signature(f, a, b, m)
         prevlen = curlen
     end
 
-    return sig[2:end]
+    return sig
 end
 
 function _segment_level!(out::AbstractVector{T}, Δ::AbstractVector{T}, m::Int, previous::AbstractVector{T}) where T
@@ -42,40 +45,47 @@ function _segment_level!(out::AbstractVector{T}, Δ::AbstractVector{T}, m::Int, 
     end
 end
 
-function chen_product(x1::Vector{T}, x2::Vector{T}, d::Int, m::Int) where T
+function chen_product!(out::Vector{T}, x1::Vector{T}, x2::Vector{T}, d::Int, m::Int) where T
     level_sizes = [d^k for k in 1:m]
     offsets = cumsum([0; level_sizes])
-
-    out = Vector{T}(undef, sum(level_sizes))
 
     for k in 1:m
         out_k = view(out, offsets[k]+1 : offsets[k+1])
         fill!(out_k, 0)
 
         for i in 0:k
-            # Handle level-0 as scalar 1.0 identity
-            a = (i == 0)      ? [one(T)] :
-                (i <= m)      ? view(x1, offsets[i]+1:offsets[i+1]) :
-                                nothing
+            a = i == 0     ? nothing : view(x1, offsets[i]+1:offsets[i+1])
+            b = (k - i) == 0 ? nothing : view(x2, offsets[k - i]+1:offsets[k - i + 1])
+            na = i == 0     ? 1 : length(a)
+            nb = (k - i) == 0 ? 1 : length(b)
 
-            b = (k - i == 0)  ? [one(T)] :
-                (k - i <= m)  ? view(x2, offsets[k - i]+1:offsets[k - i + 1]) :
-                                nothing
-
-            if a === nothing || b === nothing
-                continue
-            end
-
-            na, nb = length(a), length(b)
-            @inbounds for ai in 1:na
-                for bi in 1:nb
-                    out_k[(ai - 1) * nb + bi] += a[ai] * b[bi]
+            @inbounds @simd for ai in 1:na
+                a_val = i == 0 ? one(T) : a[ai]
+                @simd for bi in 1:nb
+                    b_val = (k - i) == 0 ? one(T) : b[bi]
+                    out_k[(ai - 1) * nb + bi] += a_val * b_val
                 end
             end
         end
     end
-
     return out
+end
+
+function full_signature(f, ts::Vector{Float64}, m::Int)
+    d = length(f(0.0))
+    segs = map(1:length(ts)-1) do i
+        segment_signature(f, ts[i], ts[i+1], m)
+    end
+
+    total_terms = div(d^(m+1) - 1, d - 1)
+    result = copy(segs[1])  # will be overwritten in-place
+
+    for i in 2:length(segs)
+        buf = similar(result)
+        chen_product!(buf, result, segs[i], d, m)
+        result .= buf
+    end
+    return result
 end
 
 
@@ -84,7 +94,11 @@ function segment_signature_three_points(f, a, b, c, m)
 
     x_ab = segment_signature(f, a, b, m)
     x_bc = segment_signature(f, b, c, m)
-    x_ac = chen_product(x_ab, x_bc, d, m)
+
+    total_terms = div(d^(m + 1) - d, d - 1)
+    x_ac = Vector{eltype(x_ab)}(undef, total_terms)
+
+    chen_product!(x_ac, x_ab, x_bc, d, m)
 
     return x_ac
 end
