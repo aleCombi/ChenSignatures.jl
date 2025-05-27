@@ -1,5 +1,7 @@
 module PathSignatures
 
+using StaticArrays
+
 export signature_path, signature_words, all_signature_words
 
 function signature_words(level::Int, dim::Int)
@@ -23,6 +25,26 @@ end
 function segment_signature!(out::Vector{T}, f, a, b, m::Int, buffer::Vector{T}) where T
     displacement = f(b) - f(a)
     d = length(displacement)
+    @assert length(out) == div(d^(m + 1) - d, d - 1)
+
+    idx = 1
+    curlen = d
+    view(out, idx:idx+curlen-1) .= displacement
+    idx += curlen
+    prevlen = curlen
+
+    for level in 2:m
+        curlen = d^level
+        current = view(out, idx:idx+curlen-1)
+        _segment_level!(current, displacement, level, view(out, idx - prevlen:idx - 1))
+        idx += curlen
+        prevlen = curlen
+    end
+end
+
+function segment_signature!(out::Vector{T}, a::SVector{D,T}, b::SVector{D,T}, m::Int, buffer::Vector{T}) where {D, T}
+    displacement = b - a
+    d = D
     @assert length(out) == div(d^(m + 1) - d, d - 1)
 
     idx = 1
@@ -79,6 +101,27 @@ function signature_path(f, ts::AbstractVector{<:Real}, m::Int)
 
     for i in 2:length(ts)-1
         segment_signature!(segment, f, ts[i], ts[i+1], m, segment)
+        chen_product!(b, a, segment, d, m, offsets)
+        a, b = b, a
+    end
+
+    return a
+end
+
+function signature_path(path::Vector{SVector{D,T}}, m::Int) where {D, T}
+    d = D
+    total_terms = div(d^(m + 1) - d, d - 1)
+    level_sizes = [d^k for k in 1:m]
+    offsets = cumsum([0; level_sizes])
+
+    a = Vector{T}(undef, total_terms)
+    b = Vector{T}(undef, total_terms)
+    segment = Vector{T}(undef, total_terms)
+
+    segment_signature!(a, path[1], path[2], m, segment)
+
+    for i in 2:length(path)-1
+        segment_signature!(segment, path[i], path[i+1], m, segment)
         chen_product!(b, a, segment, d, m, offsets)
         a, b = b, a
     end
