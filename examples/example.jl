@@ -1,12 +1,12 @@
-using Revise, PythonCall, BenchmarkTools, StaticArrays
+using Revise, PythonCall, BenchmarkTools, StaticArrays, PathSignatures
 @py import iisignature
 @py import numpy as np
 
 # path: R -> R^2
-f(t) = @SVector [t, 2t, 3.5t]
+f(t) = @SVector [t, 2t]
 
 ts = range(0.0, stop=1.0, length=1000)
-m = 4
+m = 10
 
 # --- Julia signatures ---
 
