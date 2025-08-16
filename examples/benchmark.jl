@@ -1,6 +1,6 @@
 # examples/benchmark.jl
 
-using Revise, PythonCall, BenchmarkTools, StaticArrays, PathSignatures
+using Revise, PythonCall, BenchmarkTools, StaticArrays, PathSignatures, Printf
 @py import iisignature
 @py import numpy as np
 
@@ -42,7 +42,7 @@ function bench_case(d::Int, m::Int, N::Int, kind::Symbol)
 
     # validate
     sig_py_vec = pyconvert(Vector{Float64}, sig_py)
-    @assert isapprox(sig_julia, sig_py_vec; atol=1e-8, rtol=1e-8)
+    @assert isapprox(sig_julia.coeffs, sig_py_vec; atol=1e-8, rtol=1e-8)
 
     # timings (no `$` interpolation needed inside a function)
     t_jl = @belapsed signature_path(path, m)

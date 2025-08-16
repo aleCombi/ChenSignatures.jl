@@ -35,12 +35,12 @@ end
     prev_start::Int, prev_len::Int, cur_start::Int
 ) where {T}
     d = length(Δ)
-    @inbounds for i in 1:d
+    for i in 1:d
         s = scale * Δ[i]
-        base = cur_start + (i - 1) * prev_len
+        base = cur_start + (i - 1) * prev_len - 1
         # long inner loop → AVX helps
         @avx for j in 1:prev_len
-            out[base + j - 1] = s * out[prev_start + j - 1]
+            out[base + j] = s * out[prev_start + j - 1]
         end
     end
     return nothing
@@ -100,8 +100,7 @@ end
 
 @inline function chen_product!(
     out::StridedVector{T}, x1::StridedVector{T}, x2::StridedVector{T},
-    m::Int, offsets::Vector{Int};
-    fastmath::Bool = false,
+    m::Int, offsets::Vector{Int}
 ) where {T}
     @inbounds for k in 1:m
         out_start = offsets[k] + 1
@@ -122,14 +121,8 @@ end
                 s    = x1[a_start + ai]
                 row0 = out_start + (ai - 1) * b_len - 1
                 bs0  = b_start  # 0-based; index as (bs0 + bi)
-                if fastmath
-                    @fastmath @avx for bi in 1:b_len
-                        out[row0 + bi] += s * x2[bs0 + bi]
-                    end
-                else
-                    @avx for bi in 1:b_len
-                        out[row0 + bi] += s * x2[bs0 + bi]
-                    end
+                @inbounds @simd for bi in 1:b_len
+                    out[row0 + bi] += s * x2[bs0 + bi]
                 end
             end
         end
@@ -137,14 +130,8 @@ end
         # ---- endpoint term: i = k  (x1_k ⊗ 1) → contiguous add
         # This is a_len = out_len, b_len = 1 → flatten to one loop.
         a_start = offsets[k]
-        if fastmath
-            @fastmath @avx for j in 1:out_len
-                out[out_start + j - 1] += x1[a_start + j]
-            end
-        else
-            @avx for j in 1:out_len
-                out[out_start + j - 1] += x1[a_start + j]
-            end
+        @inbounds @simd for j in 1:out_len
+            out[out_start + j - 1] += x1[a_start + j]
         end
     end
     return out
