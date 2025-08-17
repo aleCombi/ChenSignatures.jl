@@ -3,16 +3,16 @@ module PathSignatures
 using StaticArrays
 using LoopVectorization: @avx
 
-include("tensor_series.jl")
-export TensorSeries, signature_path
+include("dense_tensors.jl")
+export Tensor, signature_path, AbstractTensor   
 
 # ---------------- public API ----------------
 
 function signature_path(path::Vector{SVector{D,T}}, m::Int) where {D,T}
     d = D
-    a = TensorSeries{T}(d, m)
-    b = TensorSeries{T}(d, m)
-    segment_tensor = TensorSeries{T}(d, m)
+    a = Tensor{T}(d, m)
+    b = Tensor{T}(d, m)
+    segment_tensor = Tensor{T}(d, m)
     displacement = Vector{T}(undef, d)
 
     displacement .= path[2] - path[1] 
@@ -28,7 +28,7 @@ function signature_path(path::Vector{SVector{D,T}}, m::Int) where {D,T}
     return a
 end
 
-include("symbolic_tensor_algebra.jl")
+include("sparse_tensors.jl")
 include("vol_signature.jl")
 include("tensor_conversions.jl")
 

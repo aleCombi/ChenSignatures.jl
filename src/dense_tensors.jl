@@ -1,15 +1,17 @@
-struct TensorSeries{T}
+abstract type AbstractTensor end
+
+struct Tensor{T} <: AbstractTensor
     coeffs::StridedVector{T}
     dim::Int
     level::Int
     offsets::Vector{Int}
     
-    function TensorSeries(coeffs::StridedVector{T}, dim::Int, level::Int) where {T}
+    function Tensor(coeffs::StridedVector{T}, dim::Int, level::Int) where {T}
         offsets = level_starts0(dim, level)
         new{T}(coeffs, dim, level, offsets)
     end
 
-    function TensorSeries{T}(dim::Int, level::Int) where {T}
+    function Tensor{T}(dim::Int, level::Int) where {T}
         total_terms = div(dim^(level + 1) - dim, dim - 1)
         coeffs = Vector{T}(undef, total_terms)
         offsets = level_starts0(dim, level)
@@ -17,49 +19,40 @@ struct TensorSeries{T}
     end
 end
 
-Base.length(ts::TensorSeries) = length(ts.coeffs)
-Base.getindex(ts::TensorSeries, i::Int) = ts.coeffs[i]
-Base.show(io::IO, ts::TensorSeries) =
+## Tensor interface
+
+Base.length(ts::Tensor{T}) where T = length(ts.coeffs)
+Base.getindex(ts::Tensor{T}, i::Int) where T = ts.coeffs[i]
+Base.show(io::IO, ts::Tensor{T}) where T =
     print(io, "TensorSeries(dim=$(ts.dim), level=$(ts.level), length=$(length(ts)))")
 
     # Element type of a TensorSeries
-Base.eltype(::TensorSeries{T}) where {T} = T
+Base.eltype(::Tensor{T}) where {T} = T
 
 # Allocate a new TensorSeries with the same "shape" (dim, level)
-Base.similar(ts::TensorSeries{T}) where {T} = TensorSeries{T}(ts.dim, ts.level)
+Base.similar(ts::Tensor{T}) where {T} = Tensor{T}(ts.dim, ts.level)
 
 # Same, but change element type (handy for promoting to BigFloat, Dual, etc.)
-Base.similar(ts::TensorSeries, ::Type{S}) where {S} = TensorSeries{S}(ts.dim, ts.level)
+Base.similar(ts::Tensor{T}, ::Type{S}) where {T,S} = Tensor{S}(ts.dim, ts.level)
 
 # Allocate-and-copy convenience
-Base.copy(ts::TensorSeries{T}) where {T} = TensorSeries(copy(ts.coeffs), ts.dim, ts.level)
+Base.copy(ts::Tensor{T}) where {T} = Tensor(copy(ts.coeffs), ts.dim, ts.level)
 
 # In-place copy with shape check (future-proof for pipelines)
-function Base.copy!(dest::TensorSeries, src::TensorSeries)
+function Base.copy!(dest::Tensor, src::Tensor)
     @assert dest.dim == src.dim && dest.level == src.level "TensorSeries shape mismatch"
     copyto!(dest.coeffs, src.coeffs)
     return dest
 end
 
-# ---------------- internals ----------------
-
-@inline function _segment_level_offsets!(
-    out::StridedVector{T}, Δ::StridedVector{T}, scale::T,
-    prev_start::Int, prev_len::Int, cur_start::Int
-) where {T}
-    d = length(Δ)
-    @inbounds @avx for i in 1:d, j in 1:prev_len
-        s = scale * Δ[i]
-        base = cur_start + (i - 1) * prev_len - 1
-        out[base + j] = s * out[prev_start + j - 1]
-    end
-    return nothing
-end
+dim(ts::Tensor)   = ts.dim
+level(ts::Tensor) = ts.level
+coeffs(ts::Tensor) = ts.coeffs
 
 # --- core kernel: tensor_exponential!(out, x, m) ---
 # Computes: out = Σ_{k=1}^m (x^{⊗k} / k!)
 @inline function exp!(
-    out::TensorSeries{T}, x::StridedVector{T}
+    out::Tensor{T}, x::StridedVector{T}
 ) where {T}
 
 # level 1
@@ -94,8 +87,17 @@ end
     return nothing
 end
 
+
+function mul(a::AbstractTensor, b::AbstractTensor)
+    # allocate same "shape" as a, using eltype promotion
+    dest = similar(a, promote_type(eltype(a), eltype(b)))
+    return mul!(dest, a, b)
+end
+
+⊗(a::AbstractTensor, b::AbstractTensor) = mul(a, b)
+
 @inline function mul!(
-    out_tensor::TensorSeries{T}, x1_tensor::TensorSeries{T}, x2_tensor::TensorSeries{T}
+    out_tensor::Tensor{T}, x1_tensor::Tensor{T}, x2_tensor::Tensor{T}
 ) where {T}
     out, x1, x2, m = out_tensor.coeffs, x1_tensor.coeffs, x2_tensor.coeffs, out_tensor.level
     offsets = out_tensor.offsets
@@ -128,6 +130,19 @@ end
         end
     end
     return out
+end
+
+@inline function _segment_level_offsets!(
+    out::StridedVector{T}, Δ::StridedVector{T}, scale::T,
+    prev_start::Int, prev_len::Int, cur_start::Int
+) where {T}
+    d = length(Δ)
+    @inbounds @avx for i in 1:d, j in 1:prev_len
+        s = scale * Δ[i]
+        base = cur_start + (i - 1) * prev_len - 1
+        out[base + j] = s * out[prev_start + j - 1]
+    end
+    return nothing
 end
 
 """

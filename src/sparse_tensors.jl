@@ -1,13 +1,6 @@
 using LinearAlgebra
 
 """
-    AbstractTensorAlgebra
-
-Abstract base type for tensor algebra elements.
-"""
-abstract type AbstractTensorAlgebra end
-
-"""
     Word
 
 Represents a word (multi-index) in the tensor algebra basis.
@@ -35,51 +28,51 @@ end
 """
     SymbolicTensor{T}
 
-Represents an element of the (extended) tensor algebra T((ℝᵈ)) as a sparse 
+Represents an element of the (extended) tensor algebra TN((ℝᵈ)) as a sparse 
 collection of coefficients indexed by words.
 
 Fields:
 - `coeffs`: Dictionary mapping words to their coefficients
 - `dim`: Dimension of the base space ℝᵈ
-- `max_order`: Maximum tensor order (nothing for infinite)
+- `level`: Maximum tensor order (nothing for infinite)
 """
-struct SymbolicTensor{T} <: AbstractTensorAlgebra
+struct SparseTensor{T} <: AbstractTensor
     coeffs::Dict{Word, T}
     dim::Int
-    max_order::Union{Int, Nothing}
+    level::Int
     
-    function SymbolicTensor{T}(coeffs::Dict{Word, T}, dim::Int, max_order::Union{Int, Nothing}=nothing) where T
+    function SparseTensor{T}(coeffs::Dict{Word, T}, dim::Int, level::Int) where T
         # Filter out zero coefficients
         filtered_coeffs = filter(p -> !iszero(p.second), coeffs)
-        new{T}(filtered_coeffs, dim, max_order)
+        new{T}(filtered_coeffs, dim, level)
     end
 end
 
 # Convenient constructors
-SymbolicTensor(coeffs::Dict{Word, T}, dim::Int, max_order::Union{Int, Nothing}=nothing) where T = 
-    SymbolicTensor{T}(coeffs, dim, max_order)
+SparseTensor(coeffs::Dict{Word, T}, dim::Int, level::Int) where T = 
+    SparseTensor{T}(coeffs, dim, level)
 
-SymbolicTensor{T}(dim::Int, max_order::Union{Int, Nothing}=nothing) where T = 
-    SymbolicTensor{T}(Dict{Word, T}(), dim, max_order)
+SparseTensor{T}(dim::Int, level::Int) where T = 
+    SparseTensor{T}(Dict{Word, T}(), dim, level)
 
 # Zero tensor
-Base.zero(::Type{SymbolicTensor{T}}, dim::Int, max_order::Union{Int, Nothing}=nothing) where T = 
-    SymbolicTensor{T}(dim, max_order)
+Base.zero(::Type{SparseTensor{T}}, dim::Int, level::Int) where T = 
+    SparseTensor{T}(dim, level)
 
-Base.zero(t::SymbolicTensor{T}) where T = zero(SymbolicTensor{T}, t.dim, t.max_order)
+Base.zero(t::SparseTensor{T}) where T = zero(SparseTensor{T}, t.dim, t.level)
 
 # Coefficient access
-function Base.getindex(t::SymbolicTensor{T}, w::Word) where T
+function Base.getindex(t::SparseTensor{T}, w::Word) where T
     get(t.coeffs, w, zero(T))
 end
 
-function Base.setindex!(t::SymbolicTensor{T}, val::T, w::Word) where T
+function Base.setindex!(t::SparseTensor{T}, val::T, w::Word) where T
     if iszero(val)
         delete!(t.coeffs, w)
     else
-        # Check max_order constraint
-        if t.max_order !== nothing && length(w) > t.max_order
-            throw(ArgumentError("Word length $(length(w)) exceeds max_order $(t.max_order)"))
+        # Check level constraint
+        if t.level !== nothing && length(w) > t.level
+            throw(ArgumentError("Word length $(length(w)) exceeds level $(t.level)"))
         end
         # Check dimension constraint
         if any(i -> i < 1 || i > t.dim, w.indices)
@@ -91,12 +84,12 @@ function Base.setindex!(t::SymbolicTensor{T}, val::T, w::Word) where T
 end
 
 # Iteration interface
-Base.iterate(t::SymbolicTensor) = iterate(t.coeffs)
-Base.iterate(t::SymbolicTensor, state) = iterate(t.coeffs, state)
-Base.length(t::SymbolicTensor) = length(t.coeffs)
+Base.iterate(t::SparseTensor) = iterate(t.coeffs)
+Base.iterate(t::SparseTensor, state) = iterate(t.coeffs, state)
+Base.length(t::SparseTensor) = length(t.coeffs)
 
 # Display
-function Base.show(io::IO, t::SymbolicTensor{T}) where T
+function Base.show(io::IO, t::SparseTensor{T}) where T
     if isempty(t.coeffs)
         print(io, "0")
         return
@@ -123,7 +116,7 @@ function Base.show(io::IO, t::SymbolicTensor{T}) where T
 end
 
 # Basic arithmetic operations
-function Base.:+(t1::SymbolicTensor{T}, t2::SymbolicTensor{T}) where T
+function Base.:+(t1::SparseTensor{T}, t2::SparseTensor{T}) where T
     @assert t1.dim == t2.dim "Tensor dimensions must match"
     
     result_coeffs = copy(t1.coeffs)
@@ -140,15 +133,15 @@ function Base.:+(t1::SymbolicTensor{T}, t2::SymbolicTensor{T}) where T
         end
     end
     
-    max_order = something(t1.max_order, t2.max_order)
-    if t1.max_order !== nothing && t2.max_order !== nothing
-        max_order = max(t1.max_order, t2.max_order)
+    level = something(t1.level, t2.level)
+    if t1.level !== nothing && t2.level !== nothing
+        level = max(t1.level, t2.level)
     end
     
-    return SymbolicTensor{T}(result_coeffs, t1.dim, max_order)
+    return SparseTensor{T}(result_coeffs, t1.dim, level)
 end
 
-function Base.:-(t1::SymbolicTensor{T}, t2::SymbolicTensor{T}) where T
+function Base.:-(t1::SparseTensor{T}, t2::SparseTensor{T}) where T
     @assert t1.dim == t2.dim "Tensor dimensions must match"
     
     result_coeffs = copy(t1.coeffs)
@@ -165,15 +158,15 @@ function Base.:-(t1::SymbolicTensor{T}, t2::SymbolicTensor{T}) where T
         end
     end
     
-    max_order = something(t1.max_order, t2.max_order)
-    if t1.max_order !== nothing && t2.max_order !== nothing
-        max_order = max(t1.max_order, t2.max_order)
+    level = something(t1.level, t2.level)
+    if t1.level !== nothing && t2.level !== nothing
+        level = max(t1.level, t2.level)
     end
     
-    return SymbolicTensor{T}(result_coeffs, t1.dim, max_order)
+    return SparseTensor{T}(result_coeffs, t1.dim, level)
 end
 
-function Base.:*(scalar, t::SymbolicTensor{T}) where T
+function Base.:*(scalar, t::SparseTensor{T}) where T
     if iszero(scalar)
         return zero(t)
     end
@@ -183,83 +176,82 @@ function Base.:*(scalar, t::SymbolicTensor{T}) where T
         result_coeffs[word] = scalar * coeff
     end
     
-    return SymbolicTensor{T}(result_coeffs, t.dim, t.max_order)
+    return SparseTensor{T}(result_coeffs, t.dim, t.level)
 end
 
-Base.:*(t::SymbolicTensor, scalar) = scalar * t
+Base.:*(t::SparseTensor, scalar) = scalar * t
 
 # Tensor product operation
-function tensor_product(t1::SymbolicTensor{T}, t2::SymbolicTensor{T}) where T
-    @assert t1.dim == t2.dim "Tensor dimensions must match"
-    
-    result_coeffs = Dict{Word, T}()
-    
-    for (w1, c1) in t1.coeffs
-        for (w2, c2) in t2.coeffs
-            new_word = w1 * w2  # Concatenation
-            coeff = c1 * c2
-            
-            # Check max_order constraint
-            max_order = something(t1.max_order, t2.max_order)
-            if t1.max_order !== nothing && t2.max_order !== nothing
-                max_order = t1.max_order + t2.max_order
-            end
-            
-            if max_order === nothing || length(new_word) <= max_order
-                if haskey(result_coeffs, new_word)
-                    result_coeffs[new_word] += coeff
-                else
-                    result_coeffs[new_word] = coeff
-                end
+function mul!(dest::SparseTensor{T},
+                   a::SparseTensor{T},
+                   b::SparseTensor{T}) where {T}
+
+    empty!(dest.coeffs)  # clear previous contents
+
+    for (wa, ca) in a.coeffs
+        for (wb, cb) in b.coeffs
+            len = length(wa) + length(wb)
+            if len <= dest.level
+                key = (wa..., wb...)             # concatenate words
+                dest.coeffs[key] = get(dest.coeffs, key, zero(T)) + ca * cb
             end
         end
     end
-    
-    max_order = something(t1.max_order, t2.max_order)
-    if t1.max_order !== nothing && t2.max_order !== nothing
-        max_order = t1.max_order + t2.max_order
-    end
-    
-    return SymbolicTensor{T}(result_coeffs, t1.dim, max_order)
+    return dest
 end
 
-# Shuffle product (key operation from the paper)
-function shuffle_product(t1::SymbolicTensor{T}, t2::SymbolicTensor{T}) where T
+
+"""
+    shuffle_product!(out, t1, t2)
+
+In-place shuffle product. Writes the result of `t1 ⨂ t2` into `out`.
+`out` must be a `SparseTensor` with compatible `dim` and will have its coeffs cleared.
+"""
+function shuffle_product!(out::SparseTensor{T}, t1::SparseTensor{T}, t2::SparseTensor{T}) where {T}
     @assert t1.dim == t2.dim "Tensor dimensions must match"
-    
-    result_coeffs = Dict{Word, T}()
-    
+    @assert out.dim == t1.dim "Output tensor dimension mismatch"
+
+    empty!(out.coeffs)
+
     for (w1, c1) in t1.coeffs
         for (w2, c2) in t2.coeffs
-            # Compute all shuffles of w1 and w2
             shuffles = compute_shuffles(w1, w2)
             coeff = c1 * c2
-            
+
             for shuffle_word in shuffles
-                # Check max_order constraint
-                max_order = something(t1.max_order, t2.max_order)
-                if t1.max_order !== nothing && t2.max_order !== nothing
-                    max_order = max(t1.max_order, t2.max_order)
+                # level check
+                level = something(t1.level, t2.level)
+                if t1.level !== nothing && t2.level !== nothing
+                    level = max(t1.level, t2.level)
                 end
-                
-                if max_order === nothing || length(shuffle_word) <= max_order
-                    if haskey(result_coeffs, shuffle_word)
-                        result_coeffs[shuffle_word] += coeff
-                    else
-                        result_coeffs[shuffle_word] = coeff
-                    end
+
+                if length(shuffle_word) <= level
+                    out.coeffs[shuffle_word] = get(out.coeffs, shuffle_word, zero(T)) + coeff
                 end
             end
         end
     end
-    
-    max_order = something(t1.max_order, t2.max_order)
-    if t1.max_order !== nothing && t2.max_order !== nothing
-        max_order = max(t1.max_order, t2.max_order)
+
+    out.level = if t1.level !== nothing && t2.level !== nothing
+        max(t1.level, t2.level)
+    else
+        something(t1.level, t2.level)
     end
-    
-    return SymbolicTensor{T}(result_coeffs, t1.dim, max_order)
+
+    return out
 end
+
+"""
+    shuffle_product(t1, t2) -> SparseTensor
+
+Allocating shuffle product. Creates a fresh `SparseTensor`.
+"""
+function shuffle_product(t1::SparseTensor{T}, t2::SparseTensor{T}) where {T}
+    return shuffle_product!(similar(t1), t1, t2)
+end
+
+# --- operator alias (⊔ = shuffle product) ---
+const ⊔ = shuffle_product
 
 # Helper function to compute all shuffles of two words
 function compute_shuffles(w1::Word, w2::Word)
@@ -287,7 +279,7 @@ function compute_shuffles(w1::Word, w2::Word)
 end
 
 # Projection operation |_u from the paper
-function projection(t::SymbolicTensor{T}, u::Word) where T
+function projection(t::SparseTensor{T}, u::Word) where T
     result_coeffs = Dict{Word, T}()
     
     for (word, coeff) in t.coeffs
@@ -297,11 +289,11 @@ function projection(t::SymbolicTensor{T}, u::Word) where T
         end
     end
     
-    return SymbolicTensor{T}(result_coeffs, t.dim, t.max_order)
+    return SparseTensor{T}(result_coeffs, t.dim, t.level)
 end
 
 # Bracket operation ⟨ℓ, p⟩ from the paper
-function bracket(ℓ::SymbolicTensor{T}, p::SymbolicTensor{T}) where T
+function bracket(ℓ::SparseTensor{T}, p::SparseTensor{T}) where T
     @assert ℓ.dim == p.dim "Tensor dimensions must match"
     
     result = zero(T)
@@ -315,30 +307,30 @@ function bracket(ℓ::SymbolicTensor{T}, p::SymbolicTensor{T}) where T
 end
 
 # Utility functions for creating basis elements
-function basis_element(::Type{T}, dim::Int, word::Word, max_order::Union{Int, Nothing}=nothing) where T
+function basis_element(::Type{T}, dim::Int, word::Word, level::Union{Int, Nothing}=nothing) where T
     coeffs = Dict{Word, T}(word => one(T))
-    return SymbolicTensor{T}(coeffs, dim, max_order)
+    return SparseTensor{T}(coeffs, dim, level)
 end
 
-function empty_word_element(::Type{T}, dim::Int, max_order::Union{Int, Nothing}=nothing) where T
-    return basis_element(T, dim, Word(), max_order)
+function empty_word_element(::Type{T}, dim::Int, level::Union{Int, Nothing}=nothing) where T
+    return basis_element(T, dim, Word(), level)
 end
 
-function single_letter_element(::Type{T}, dim::Int, i::Int, max_order::Union{Int, Nothing}=nothing) where T
-    return basis_element(T, dim, Word(i), max_order)
+function single_letter_element(::Type{T}, dim::Int, i::Int, level::Union{Int, Nothing}=nothing) where T
+    return basis_element(T, dim, Word(i), level)
 end
 
 # Truncation operation
-function truncate(t::SymbolicTensor{T}, max_order::Int) where T
+function truncate(t::SparseTensor{T}, level::Int) where T
     result_coeffs = Dict{Word, T}()
     
     for (word, coeff) in t.coeffs
-        if length(word) <= max_order
+        if length(word) <= level
             result_coeffs[word] = coeff
         end
     end
     
-    return SymbolicTensor{T}(result_coeffs, t.dim, max_order)
+    return SparseTensor{T}(result_coeffs, t.dim, level)
 end
 
 """
@@ -346,9 +338,9 @@ end
 
 Compute the shuffle exponential e^⊔⊔ℓ = ∑_{n=0}^∞ ℓ^⊔⊔n/n! (Equation 2.7)
 """
-function shuffle_exponential(ℓ::SymbolicTensor{T}; max_terms::Int=10) where T
-    result = empty_word_element(T, ℓ.dim, ℓ.max_order)
-    ℓ_power = empty_word_element(T, ℓ.dim, ℓ.max_order)  # ℓ^⊔⊔0 = ∅
+function shuffle_exponential(ℓ::SparseTensor{T}; max_terms::Int=10) where T
+    result = empty_word_element(T, ℓ.dim, ℓ.level)
+    ℓ_power = empty_word_element(T, ℓ.dim, ℓ.level)  # ℓ^⊔⊔0 = ∅
     
     for n in 0:max_terms
         factorial_n = factorial(n)
@@ -368,15 +360,15 @@ end
 Compute the resolvent (∅ - ℓ)^{-1} = ∑_{n=0}^∞ ℓ^⊗n (Equation 2.5)
 Assumes ℓ_∅ = 0
 """
-function resolvent(ℓ::SymbolicTensor{T}; max_terms::Int=10) where T
+function resolvent(ℓ::SparseTensor{T}; max_terms::Int=10) where T
     # Check that ℓ_∅ = 0
     empty_word = Word()
     if !iszero(ℓ[empty_word])
         throw(ArgumentError("For resolvent to be well-defined, coefficient of empty word must be zero"))
     end
     
-    result = empty_word_element(T, ℓ.dim, ℓ.max_order)
-    ℓ_power = empty_word_element(T, ℓ.dim, ℓ.max_order)  # ℓ^⊗0 = ∅
+    result = empty_word_element(T, ℓ.dim, ℓ.level)
+    ℓ_power = empty_word_element(T, ℓ.dim, ℓ.level)  # ℓ^⊗0 = ∅
     
     for n in 0:max_terms
         result = result + ℓ_power
@@ -390,7 +382,7 @@ function resolvent(ℓ::SymbolicTensor{T}; max_terms::Int=10) where T
 end
 
 # Export main types and functions
-export SymbolicTensor, Word, AbstractTensorAlgebra
+export SparseTensor, Word, AbstractTensorAlgebra
 export tensor_product, shuffle_product, projection, bracket
 export basis_element, empty_word_element, single_letter_element, truncate
 export resolvent, shuffle_exponential

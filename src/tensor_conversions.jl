@@ -10,10 +10,10 @@ function vector_to_tensor(sig_vector::Vector{Float64}, word_map::Vector{Word}, d
             coeffs[word] = sig_vector[i]
         end
     end
-    return SymbolicTensor{Float64}(coeffs, dim)
+    return SparseTensor{Float64}(coeffs, dim)
 end
 
-function tensor_to_vector(σ::SymbolicTensor, word_map::Vector{Word})
+function tensor_to_vector(σ::SparseTensor, word_map::Vector{Word})
     """Convert SymbolicTensor to vector using word ordering"""
     sig_vector = zeros(Float64, length(word_map))
     for (i, word) in enumerate(word_map)
