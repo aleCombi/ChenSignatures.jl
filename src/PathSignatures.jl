@@ -8,11 +8,16 @@ export Tensor, signature_path, AbstractTensor
 
 # ---------------- public API ----------------
 
-function signature_path(path::Vector{SVector{D,T}}, m::Int) where {D,T}
+function signature_path(::Type{AT}, path::Vector{SVector{D,T}}, m::Int) where {D,T, AT <: AbstractTensor{T}}
+    out = AT(D,m)
+    return signature_path!(out, path)
+end
+
+function signature_path!(out::AT, path::Vector{SVector{D,T}}) where {D,T, AT <: AbstractTensor{T}}
     d = D
-    a = Tensor{T}(d, m)
-    b = Tensor{T}(d, m)
-    segment_tensor = Tensor{T}(d, m)
+    a = similar(out)
+    b = similar(out)
+    segment_tensor = similar(out)
     displacement = Vector{T}(undef, d)
 
     displacement .= path[2] - path[1] 

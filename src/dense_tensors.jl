@@ -1,6 +1,6 @@
-abstract type AbstractTensor end
+abstract type AbstractTensor{T} end
 
-struct Tensor{T} <: AbstractTensor
+struct Tensor{T} <: AbstractTensor{T}
     coeffs::StridedVector{T}
     dim::Int
     level::Int
@@ -24,12 +24,12 @@ end
 Base.length(ts::Tensor{T}) where T = length(ts.coeffs)
 Base.getindex(ts::Tensor{T}, i::Int) where T = ts.coeffs[i]
 Base.show(io::IO, ts::Tensor{T}) where T =
-    print(io, "TensorSeries(dim=$(ts.dim), level=$(ts.level), length=$(length(ts)))")
+    print(io, "Tensor(dim=$(ts.dim), level=$(ts.level), length=$(length(ts)))")
 
-    # Element type of a TensorSeries
+    # Element type of a Tensor
 Base.eltype(::Tensor{T}) where {T} = T
 
-# Allocate a new TensorSeries with the same "shape" (dim, level)
+# Allocate a new Tensorwith the same "shape" (dim, level)
 Base.similar(ts::Tensor{T}) where {T} = Tensor{T}(ts.dim, ts.level)
 
 # Same, but change element type (handy for promoting to BigFloat, Dual, etc.)
@@ -40,7 +40,7 @@ Base.copy(ts::Tensor{T}) where {T} = Tensor(copy(ts.coeffs), ts.dim, ts.level)
 
 # In-place copy with shape check (future-proof for pipelines)
 function Base.copy!(dest::Tensor, src::Tensor)
-    @assert dest.dim == src.dim && dest.level == src.level "TensorSeries shape mismatch"
+    @assert dest.dim == src.dim && dest.level == src.level "Tensor shape mismatch"
     copyto!(dest.coeffs, src.coeffs)
     return dest
 end
@@ -48,6 +48,100 @@ end
 dim(ts::Tensor)   = ts.dim
 level(ts::Tensor) = ts.level
 coeffs(ts::Tensor) = ts.coeffs
+
+function power_elevate!(out::AT, t::AT, n::Int) where {AT<:AbstractTensor}
+    n == 0 && return (exp!(out, zeros(eltype(t), t.dim)); out)  # identity
+    n == 1 && return copyto!(out, t)
+
+    copyto!(out, t)
+    tmp = similar(out)
+    for k in 2:n
+        mul!(tmp, out, t)
+        out, tmp = tmp, out
+    end
+    return out
+end
+
+# --- small helpers ------------------------------------------------------------
+
+@inline function _zero!(ts::Tensor{T}) where {T}
+    fill!(ts.coeffs, zero(T)); ts
+end
+
+@inline function _add_scaled!(dest::Tensor{T}, src::Tensor{T}, α::T) where {T}
+    @inbounds @simd for i in eachindex(dest.coeffs, src.coeffs)
+        dest.coeffs[i] = muladd(α, src.coeffs[i], dest.coeffs[i])
+    end
+    dest
+end
+
+"""
+    exp!(out, X)
+
+Compute the truncated power-series exponential:
+    out = X + X^2/2! + ... + X^m/m!
+(Level-0 unit is implicit and not stored; backends control truncation via `level`.)
+Works for any `Tensor` backend implementing the small interface.
+"""
+function exp!(out::AT, X::AT) where {AT<:AbstractTensor}
+    @assert dim(out)   == dim(X)
+    @assert level(out) == level(X)
+
+    _zero!(out)
+    m = level(X)
+    m == 0 && return out
+
+    # term = X^1
+    term = similar(X)
+    copy!(term, X)
+
+    T = eltype(X)
+    invfact = one(T)                # 1/1!
+    add_scaled!(out, term, invfact) # add X
+
+    # tmp buffer for powers
+    tmp = similar(X)
+
+    @inbounds for k in 2:m
+        # tmp <- term * X   (do not assume alias-safety)
+        mul!(tmp, term, X)
+        term, tmp = tmp, term
+
+        invfact *= inv(T(k))        # update 1/k!
+        add_scaled!(out, term, invfact)
+    end
+    return out
+end
+
+# Allocating wrapper (works for any backend)
+function exp(X::AT) where {AT<:AbstractTensor}
+    out = similar(X)
+    exp!(out, X)
+    return out
+end
+
+function lift1!(ts::Tensor{T}, x::AbstractVector{T}) where {T}
+    @assert length(x) == ts.dim
+    fill!(ts.coeffs, zero(T))
+    @inbounds copyto!(ts.coeffs, 1, x, 1, ts.dim)  # write level-1 block
+    return ts
+end
+
+"""
+    exp!(out, x::AbstractVector)
+
+Compute the truncated tensor exponential of a level-1 element `x`:
+    exp(x) = x + x^2/2! + ... + x^m/m!
+(level-0 unit is implicit/not stored). Works for any Tensor backend.
+"""
+function exp!(out::AT, x::AbstractVector{T}) where {T,AT<:AbstractTensor{T}}
+    # Build the level-1 tensor X from x
+    X = similar(out)::AT
+    lift1!(X, x)
+
+    # out ← exp(X) via the generic tensor power-series kernel
+    return exp!(out, X)
+end
 
 # --- core kernel: tensor_exponential!(out, x, m) ---
 # Computes: out = Σ_{k=1}^m (x^{⊗k} / k!)

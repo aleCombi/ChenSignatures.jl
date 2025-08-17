@@ -36,7 +36,7 @@ Fields:
 - `dim`: Dimension of the base space ℝᵈ
 - `level`: Maximum tensor order (nothing for infinite)
 """
-struct SparseTensor{T} <: AbstractTensor
+struct SparseTensor{T} <: AbstractTensor{T}
     coeffs::Dict{Word, T}
     dim::Int
     level::Int
@@ -48,12 +48,45 @@ struct SparseTensor{T} <: AbstractTensor
     end
 end
 
+@inline function _zero!(ts::SparseTensor{T}) where {T}
+    zero(ts)
+end
+
+dim(ts::SparseTensor)   = ts.dim
+level(ts::SparseTensor) = ts.level
+
+function lift1!(st::SparseTensor{T}, x::AbstractVector{T}) where {T}
+    @assert length(x) == st.dim
+    empty!(st.coeffs)
+    @inbounds for i in eachindex(x)
+        v = x[i]
+        if !iszero(v)
+            st.coeffs[Word(i)] = v
+        end
+    end
+    return st
+end
+
 # Convenient constructors
 SparseTensor(coeffs::Dict{Word, T}, dim::Int, level::Int) where T = 
     SparseTensor{T}(coeffs, dim, level)
 
 SparseTensor{T}(dim::Int, level::Int) where T = 
     SparseTensor{T}(Dict{Word, T}(), dim, level)
+
+    @inline function Base.copy!(dest::SparseTensor{T}, src::SparseTensor{T}) where {T}
+    # clear destination coefficients but keep capacity
+    empty!(dest.coeffs)
+
+    # copy all entries
+    for (w, c) in src.coeffs
+        dest.coeffs[w] = c
+    end
+
+    dest
+end
+
+Base.similar(ts::SparseTensor{T}) where {T} = SparseTensor{T}(ts.dim, ts.level)
 
 # Zero tensor
 Base.zero(::Type{SparseTensor{T}}, dim::Int, level::Int) where T = 

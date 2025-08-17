@@ -13,7 +13,7 @@ m = 5
 # --- Julia signatures ---
 
 path = [f(t) for t in ts]               # precomputed path
-sig_julia_vec = signature_path(path, m)
+sig_julia_vec = signature_path(Tensor{typeof(path[1][1])}, path, m)
 
 # --- Python iisignature baseline ---
 # build a compact C-contiguous matrix without tons of temporaries
@@ -32,9 +32,15 @@ sig_py_julia = pyconvert(Vector{Float64}, sig_py)
 # ✅ Validate match
 @assert isapprox(sig_julia_vec.coeffs,  sig_py_julia; atol=1e-6)
 
+dense_type = Tensor{typeof(path[1][1])}
+sparse_type = SparseTensor{typeof(path[1][1])}
+
 # 🕒 Benchmark
 println("Benchmarking:")
 println("Julia (signature_path(path, m))")
-@btime signature_path($path, $m);
+@btime signature_path($dense_type, $path, $m);
 println("Python (iisignature.sig)")
 @btime $iisignature.sig($path_np, $m);
+
+@btime signature_path($sparse_type, $path, $m);
+
