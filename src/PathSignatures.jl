@@ -46,11 +46,10 @@ end
 # --- core kernel: tensor_exponential!(out, x, m) ---
 # Computes: out = Σ_{k=1}^m (x^{⊗k} / k!)
 @inline function tensor_exponential!(
-    out::StridedVector{T}, x::StridedVector{T}, m::Int
+    out::StridedVector{T}, x::StridedVector{T}, m::Int, d::Int
 ) where {T}
 
 # level 1
-    d = length(x)
     idx    = 1
     curlen = d
     copyto!(out, idx, x, 1, d)
@@ -76,20 +75,6 @@ end
 
     # cheaper postcondition: avoids pow/div
     @assert idx - 1 == length(out)
-    return nothing
-end
-
-# ---- overload for *AbstractVector* endpoints ----
-@inline function segment_signature!(
-    out::StridedVector{T}, a::AbstractVector{T}, b::AbstractVector{T}, m::Int,
-    buffer::StridedVector{T},
-) where {T}
-    d = length(a)
-    @inbounds @simd for i in 1:d
-        buffer[i] = b[i] - a[i]
-    end
-    
-    tensor_exponential!(out, buffer, m)
     return nothing
 end
 
@@ -128,30 +113,36 @@ end
     return out
 end
 
+function signature_level_offsets(d, m)
+    offsets = Vector{Int}(undef, m + 1)
+    offsets[1] = 0
+    len = d
+    @inbounds for k in 1:m
+        offsets[k+1] = offsets[k] + len
+        len *= d
+    end
+
+    return offsets
+end
 
 # ---------------- public API ----------------
 
 function signature_path(path::Vector{SVector{D,T}}, m::Int) where {D,T}
     d = D
-    total_terms = div(d^(m + 1) - d, d - 1)
-
-    offsets = Vector{Int}(undef, m + 1)
-    offsets[1] = 0
-    len = d
-    for k in 1:m
-        offsets[k+1] = offsets[k] + len
-        len *= d
-    end
+    total_terms = d^m - 1
+    offsets = signature_level_offsets(d, m)
 
     a       = Vector{T}(undef, total_terms)
     b       = Vector{T}(undef, total_terms)
     segment = Vector{T}(undef, total_terms)
-    dispbuf = Vector{T}(undef, d)
+    displacement = Vector{T}(undef, d)
 
-    segment_signature!(a, path[1], path[2], m, dispbuf)
+    displacement .= path[2] - path[1] 
+    tensor_exponential!(a, displacement, m, d)
 
     for i in 2:length(path)-1
-        segment_signature!(segment, path[i], path[i+1], m, dispbuf)
+        displacement .= path[i+1] - path[i] 
+        tensor_exponential!(segment, displacement, m, d)
         chen_product!(b, a, segment, m, offsets)
         a, b = b, a
     end
