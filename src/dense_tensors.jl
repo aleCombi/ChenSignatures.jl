@@ -1,4 +1,5 @@
-abstract type AbstractTensor{T} end
+using StaticArrays
+using LoopVectorization: @avx, @turbo
 
 struct Tensor{T} <: AbstractTensor{T}
     coeffs::StridedVector{T}
@@ -16,6 +17,31 @@ struct Tensor{T} <: AbstractTensor{T}
         coeffs  = Vector{T}(undef, offsets[end])
         new{T}(coeffs, dim, level, offsets)
     end
+end
+
+# -------- Dense ↔ Dense (respects per-level padding) --------
+function Base.isapprox(a::PathSignatures.Tensor{Ta}, b::PathSignatures.Tensor{Tb};
+                       atol::Real=1e-8, rtol::Real=1e-8) where {Ta,Tb}
+    a.dim == b.dim && a.level == b.level || return false
+    sA, sB = a.offsets, b.offsets
+    d, m = a.dim, a.level
+    len = 1                     # = d^k
+    @inbounds begin
+        # level-0
+        a0 = a.coeffs[sA[1] + 1]; b0 = b.coeffs[sB[1] + 1]
+        if !(abs(a0 - b0) <= atol + rtol*max(abs(a0),abs(b0))); return false; end
+        # levels 1..m
+        for k in 1:m
+            astart = sA[k + 1] + 1
+            bstart = sB[k + 1] + 1
+            for j in 0:len-1
+                va = a.coeffs[astart + j]; vb = b.coeffs[bstart + j]
+                if !(abs(va - vb) <= atol + rtol*max(abs(va),abs(vb))); return false; end
+            end
+            len *= d
+        end
+    end
+    return true
 end
 
 ## Tensor interface
@@ -48,19 +74,6 @@ dim(ts::Tensor)   = ts.dim
 level(ts::Tensor) = ts.level
 coeffs(ts::Tensor) = ts.coeffs
 
-function power_elevate!(out::AT, t::AT, n::Int) where {AT<:AbstractTensor}
-    n == 0 && return (exp!(out, zeros(eltype(t), t.dim)); out)  # identity
-    n == 1 && return copyto!(out, t)
-
-    copyto!(out, t)
-    tmp = similar(out)
-    for k in 2:n
-        mul!(tmp, out, t)
-        out, tmp = tmp, out
-    end
-    return out
-end
-
 # --- small helpers ------------------------------------------------------------
 
 @inline function _zero!(ts::Tensor{T}) where {T}
@@ -74,53 +87,8 @@ end
     dest
 end
 
-@inline _write_unit!(t::PathSignatures.Tensor{T}) where {T} =
+@inline _write_unit!(t::Tensor{T}) where {T} =
     (t.coeffs[t.offsets[1] + 1] = one(T); t)
-
-"""
-    exp!(out, X)
-
-Compute the truncated power-series exponential:
-    out = X + X^2/2! + ... + X^m/m!
-(Level-0 unit is implicit and not stored; backends control truncation via `level`.)
-Works for any `Tensor` backend implementing the small interface.
-"""
-function exp!(out::AbstractTensor{T}, X::AbstractTensor{T}) where {T}
-    @assert dim(out)   == dim(X)
-    @assert level(out) == level(X)
-
-    _zero!(out)
-    _write_unit!(out)    
-    m = level(X)
-    m == 0 && return out
-
-    # term = X^1
-    term = similar(X)
-    copy!(term, X)
-
-    invfact = one(T)                # 1/1!
-    add_scaled!(out, term, invfact) # add X
-
-    # tmp buffer for powers
-    tmp = similar(X)
-
-    @inbounds for k in 2:m
-        # tmp <- term * X   (do not assume alias-safety)
-        mul!(tmp, term, X)
-        term, tmp = tmp, term
-
-        invfact *= inv(T(k))        # update 1/k!
-        add_scaled!(out, term, invfact)
-    end
-    return out
-end
-
-# Allocating wrapper (works for any backend)
-function exp(X::AT) where {AT<:AbstractTensor}
-    out = similar(X)
-    exp!(out, X)
-    return out
-end
 
 function lift1!(ts::Tensor{T}, x::AbstractVector{T}) where {T}
     @assert length(x) == ts.dim

@@ -87,6 +87,29 @@ SparseTensor{T}(dim::Int, level::Int) where T =
     dest
 end
 
+# -------- Sparse ↔ Sparse --------
+function Base.isapprox(A::PathSignatures.SparseTensor{Ta}, B::PathSignatures.SparseTensor{Tb};
+                       atol::Real=1e-8, rtol::Real=1e-8) where {Ta,Tb}
+    A.dim == B.dim && A.level == B.level || return false
+    RA = promote_type(Ta, Tb)
+    aC, bC = A.coeffs, B.coeffs
+
+    # A's keys against B (missing treated as 0)
+    @inbounds for (w, va) in aC
+        vb = haskey(bC, w) ? bC[w] : zero(RA)
+        vaR = RA(va); vbR = RA(vb)
+        if !(abs(vaR - vbR) <= atol + rtol*max(abs(vaR),abs(vbR))); return false; end
+    end
+    # Keys in B that are not in A (A treated as 0)
+    @inbounds for (w, vb) in bC
+        if !haskey(aC, w)
+            vbR = RA(vb); vaR = zero(RA)
+            if !(abs(vaR - vbR) <= atol + rtol*max(abs(vaR),abs(vbR))); return false; end
+        end
+    end
+    return true
+end
+
 Base.similar(ts::SparseTensor{T}) where {T} = SparseTensor{T}(ts.dim, ts.level)
 
 # Zero tensor
@@ -436,7 +459,7 @@ end
 end
 
 # Export main types and functions
-export SparseTensor, Word, AbstractTensorAlgebra
+export SparseTensor, Word
 export tensor_product, shuffle_product, projection, bracket
 export basis_element, empty_word_element, single_letter_element, truncate
 export resolvent, shuffle_exponential
