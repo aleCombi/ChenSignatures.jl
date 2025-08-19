@@ -62,6 +62,53 @@ function Tensor(t::PathSignatures.SparseTensor{T}) where {T}
     return out
 end
 
+# -------- Dense ↔ Dense (respects per-level padding) --------
+function Base.isapprox(a::PathSignatures.Tensor{Ta}, b::PathSignatures.Tensor{Tb};
+                       atol::Real=1e-8, rtol::Real=1e-8) where {Ta,Tb}
+    a.dim == b.dim && a.level == b.level || return false
+    sA, sB = a.offsets, b.offsets
+    d, m = a.dim, a.level
+    len = 1                     # = d^k
+    @inbounds begin
+        # level-0
+        a0 = a.coeffs[sA[1] + 1]; b0 = b.coeffs[sB[1] + 1]
+        if !(abs(a0 - b0) <= atol + rtol*max(abs(a0),abs(b0))); return false; end
+        # levels 1..m
+        for k in 1:m
+            astart = sA[k + 1] + 1
+            bstart = sB[k + 1] + 1
+            for j in 0:len-1
+                va = a.coeffs[astart + j]; vb = b.coeffs[bstart + j]
+                if !(abs(va - vb) <= atol + rtol*max(abs(va),abs(vb))); return false; end
+            end
+            len *= d
+        end
+    end
+    return true
+end
+
+# -------- Sparse ↔ Sparse --------
+function Base.isapprox(A::PathSignatures.SparseTensor{Ta}, B::PathSignatures.SparseTensor{Tb};
+                       atol::Real=1e-8, rtol::Real=1e-8) where {Ta,Tb}
+    A.dim == B.dim && A.level == B.level || return false
+    RA = promote_type(Ta, Tb)
+    aC, bC = A.coeffs, B.coeffs
+
+    # A's keys against B (missing treated as 0)
+    @inbounds for (w, va) in aC
+        vb = haskey(bC, w) ? bC[w] : zero(RA)
+        vaR = RA(va); vbR = RA(vb)
+        if !(abs(vaR - vbR) <= atol + rtol*max(abs(vaR),abs(vbR))); return false; end
+    end
+    # Keys in B that are not in A (A treated as 0)
+    @inbounds for (w, vb) in bC
+        if !haskey(aC, w)
+            vbR = RA(vb); vaR = zero(RA)
+            if !(abs(vaR - vbR) <= atol + rtol*max(abs(vaR),abs(vbR))); return false; end
+        end
+    end
+    return true
+end
 
 
 # word_1 = Word([1,2,3])
@@ -90,5 +137,4 @@ vec = Vector{Float64}(undef, 3)
 vec .= [2.0, 3.0, 4.5]
 PathSignatures.exp!(tensor_result, vec)
 PathSignatures.exp!(result,vec)
-@show SparseTensor(tensor_result)
-@show result
+isapprox(SparseTensor(tensor_result),result)
