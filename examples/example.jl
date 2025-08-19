@@ -5,7 +5,7 @@ CondaPkg.add_pip("iisignature")
 @py import numpy as np
 
 # path: R -> R^2
-f(t) = @SVector [t, 2t, 2t, 2t, 2t, 2t, 2t, 2t]
+f(t) = @SVector [t, 2t]
 
 ts = range(0.0, stop=1.0, length=10000)
 m = 5
