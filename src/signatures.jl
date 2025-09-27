@@ -57,27 +57,9 @@ function signature_path!(
     return a
 end
 
-
-# === Data Structures ===
-
-# Option 1: Vector{Vector{SVector{D,T}}}
-struct SVectorEnsemble{D,T}
-    paths::Vector{Vector{SVector{D,T}}}
-    n_paths::Int
-    n_steps::Int
-end
-
-# Option 2: 3D Array
-struct ArrayEnsemble{T}
-    data::Array{T,3}  # (n_steps+1) × D × n_paths
-    n_paths::Int
-    n_steps::Int
-    dim::Int
-end
-
 # === Batch Signature Functions ===
 
-# For Vector{Vector{SVector}}
+# For Vector{Vector{SVector}} (SVectorEnsemble)
 function batch_signatures!(
     outs::Vector{AT},
     ensemble::SVectorEnsemble{D,T}
@@ -114,7 +96,7 @@ function batch_signatures!(
     return outs
 end
 
-# For 3D Array - Access pattern 1: Path-major (each path completely)
+# For 3D Array (ArrayEnsemble) - Path-major access pattern
 function batch_signatures!(
     outs::Vector{AT},
     ensemble::ArrayEnsemble{T}
@@ -150,3 +132,18 @@ function batch_signatures!(
     
     return outs
 end
+
+# Convenience function to create output array for batch signatures
+function prepare_signature_outputs(::Type{AT}, ensemble, level::Int) where {AT<:AbstractTensor}
+    D = get_dimension(ensemble)
+    T = eltype(AT)
+    return [AT(D, level) for _ in 1:ensemble.n_paths]
+end
+
+# High-level batch signature computation
+function batch_signatures(::Type{AT}, ensemble, level::Int) where {AT<:AbstractTensor}
+    outs = prepare_signature_outputs(AT, ensemble, level)
+    return batch_signatures!(outs, ensemble)
+end
+
+export batch_signatures!, batch_signatures, prepare_signature_outputs

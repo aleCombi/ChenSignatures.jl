@@ -1,89 +1,82 @@
-using Random, Statistics, StaticArrays
+using Random, StaticArrays
+
+# === Data Structures ===
 
 """
-    PathEnsemble{D,T}
+    SVectorEnsemble{D,T}
 
-A structure containing an ensemble of paths with metadata.
-Each path is represented as Vector{SVector{D,T}}.
-
-Fields:
-- `paths`: Vector of paths, where each path is Vector{SVector{D,T}}
-- `times`: Vector of time points (supports non-uniform grids)  
-- `n_paths`: Number of paths in the ensemble
-- `n_steps`: Number of time steps per path
-- `dt`: Time step size for uniform grids, NaN for non-uniform grids
+Simple ensemble of paths where each path is Vector{SVector{D,T}}.
+Optimized for flexibility and ease of use.
 """
-struct PathEnsemble{D,T<:AbstractFloat}
+struct SVectorEnsemble{D,T}
     paths::Vector{Vector{SVector{D,T}}}
-    times::Vector{T}
     n_paths::Int
     n_steps::Int
-    dt::T  # NaN for non-uniform grids
     
-    function PathEnsemble{D,T}(paths::Vector{Vector{SVector{D,T}}}, times::Vector{T}) where {D,T<:AbstractFloat}
+    function SVectorEnsemble{D,T}(paths::Vector{Vector{SVector{D,T}}}) where {D,T}
         n_paths = length(paths)
-        n_steps = length(times) - 1
-        
-        # Check if grid is uniform
-        if length(times) > 1
-            dts = diff(times)
-            dt = isapprox(minimum(dts), maximum(dts), rtol=1e-10) ? dts[1] : T(NaN)
-        else
-            dt = T(NaN)
-        end
-        
-        new{D,T}(paths, times, n_paths, n_steps, dt)
+        n_steps = isempty(paths) ? 0 : length(paths[1]) - 1
+        new{D,T}(paths, n_paths, n_steps)
     end
 end
 
-# Convenience constructor that infers D,T
-function PathEnsemble(paths::Vector{Vector{SVector{D,T}}}, times::Vector{T}) where {D,T}
-    return PathEnsemble{D,T}(paths, times)
+"""
+    ArrayEnsemble{T}
+
+Array-based ensemble stored as (n_steps+1) × D × n_paths.
+Optimized for batch operations and memory efficiency.
+"""
+struct ArrayEnsemble{T}
+    data::Array{T,3}  # (n_steps+1) × D × n_paths
+    n_paths::Int
+    n_steps::Int
+    dim::Int
+    
+    function ArrayEnsemble{T}(data::Array{T,3}) where {T}
+        n_steps_plus_1, dim, n_paths = size(data)
+        n_steps = n_steps_plus_1 - 1
+        new{T}(data, n_paths, n_steps, dim)
+    end
 end
 
+# === Brownian Motion Simulators ===
+
 """
-    simulate_brownian(::Type{SVector{D,T}}; n_paths=1000, T=1.0, n_steps=252, 
-                      x0=zero(SVector{D,T}), times=nothing, rng=Random.GLOBAL_RNG)
+    simulate_brownian_svector(::Type{SVector{D,T}}; n_paths=1000, T=1.0, n_steps=252, 
+                              x0=zero(SVector{D,T}), rng=Random.GLOBAL_RNG)
 
-Simulate D-dimensional Brownian motion paths using SVector representation.
+Simulate D-dimensional Brownian motion using SVector representation.
+Returns SVectorEnsemble{D,T}.
 
-Arguments:
+# Arguments
 - First argument specifies the path point type (e.g., SVector{2,Float64})
 - `n_paths`: Number of paths to simulate
-- `T`: Final time (ignored if `times` is provided)  
-- `n_steps`: Number of time steps (ignored if `times` is provided)
+- `T`: Final time
+- `n_steps`: Number of time steps
 - `x0`: Initial value as SVector{D,T}
-- `times`: Custom time grid (overrides T and n_steps if provided)
 - `rng`: Random number generator
 
-Returns:
-- `PathEnsemble{D,T}` containing the simulated paths
-
-Example:
+# Example
 ```julia
-# 1D Brownian motion
-bm1d = simulate_brownian(SVector{1,Float64}; n_paths=1000, T=1.0, n_steps=100)
-
-# 2D Brownian motion  
-bm2d = simulate_brownian(SVector{2,Float64}; n_paths=500, T=2.0, n_steps=200)
+# 2D Brownian motion
+bm2d = simulate_brownian_svector(SVector{2,Float64}; n_paths=1000, T=1.0, n_steps=100)
 
 # With custom initial condition
 x0 = SVector(1.0, -0.5)
-bm2d = simulate_brownian(SVector{2,Float64}; x0=x0, n_paths=100)
+bm2d = simulate_brownian_svector(SVector{2,Float64}; x0=x0, n_paths=100)
 ```
 """
-function simulate_brownian(
+function simulate_brownian_svector(
     ::Type{SVector{D,T}};
     n_paths::Int = 1000,
     T::Real = 1.0,
     n_steps::Int = 252,
     x0::SVector{D,T} = zero(SVector{D,T}),
-    times::Vector{<:Real} = Vector{T}(range(zero(T), T, length=n_steps+1)),
     rng::AbstractRNG = Random.GLOBAL_RNG
 ) where {D,T<:AbstractFloat}
     
-    times_T = Vector{T}(times)
-    n_steps = length(times_T) - 1
+    dt = T / n_steps
+    sqrt_dt = sqrt(dt)
     
     # Pre-allocate paths vector
     paths = Vector{Vector{SVector{D,T}}}(undef, n_paths)
@@ -94,205 +87,168 @@ function simulate_brownian(
         path[1] = x0
         
         # Generate increments for this path
-        if n_steps > 0
-            dt_vec = diff(times_T)
-            
-            for j in 1:n_steps
-                # Generate D-dimensional increment
-                sqrt_dt = sqrt(dt_vec[j])
-                dW = SVector{D,T}(randn(rng, T) * sqrt_dt for _ in 1:D)
-                path[j+1] = path[j] + dW
-            end
+        for j in 1:n_steps
+            # Generate D-dimensional increment
+            dW = SVector{D,T}(randn(rng, T) * sqrt_dt for _ in 1:D)
+            path[j+1] = path[j] + dW
         end
         
         paths[i] = path
     end
     
-    return PathEnsemble{D,T}(paths, times_T)
+    return SVectorEnsemble{D,T}(paths)
 end
 
 """
-    simulate_brownian_matrix(::Type{SVector{D,T}}; n_paths=1000, T=1.0, n_steps=252,
-                            x0=zero(SVector{D,T}), times=nothing, rng=Random.GLOBAL_RNG)
+    simulate_brownian_array(::Type{T}, D::Int; n_paths=1000, T=1.0, n_steps=252,
+                           x0=zeros(T, D), rng=Random.GLOBAL_RNG)
 
-Alternative implementation using a matrix-based approach for potentially better performance.
-Stores paths as a (n_steps+1) × (D*n_paths) matrix internally, then converts to Vector{Vector{SVector{D,T}}}.
+Simulate D-dimensional Brownian motion using array representation.
+Returns ArrayEnsemble{T}.
 
-This can be faster for large ensembles due to better memory layout and vectorization,
-but uses more memory temporarily.
+# Arguments
+- First argument specifies the element type (e.g., Float64)
+- `D`: Spatial dimension
+- `n_paths`: Number of paths to simulate
+- `T`: Final time
+- `n_steps`: Number of time steps
+- `x0`: Initial value as Vector{T} of length D
+- `rng`: Random number generator
+
+# Example
+```julia
+# 2D Brownian motion
+bm2d = simulate_brownian_array(Float64, 2; n_paths=1000, T=1.0, n_steps=100)
+
+# With custom initial condition
+x0 = [1.0, -0.5]
+bm2d = simulate_brownian_array(Float64, 2; x0=x0, n_paths=100)
+```
 """
-function simulate_brownian_matrix(
-    ::Type{SVector{D,T}};
+function simulate_brownian_array(
+    ::Type{T}, D::Int;
     n_paths::Int = 1000,
-    T::Real = 1.0,
+    T_final::Real = 1.0,
     n_steps::Int = 252,
-    x0::SVector{D,T} = zero(SVector{D,T}),
-    times::Vector{<:Real} = Vector{T}(range(zero(T), T, length=n_steps+1)),
+    x0::Vector{T} = zeros(T, D),
     rng::AbstractRNG = Random.GLOBAL_RNG
-) where {D,T<:AbstractFloat}
+) where {T<:AbstractFloat}
     
-    times_T = Vector{T}(times)
-    n_steps = length(times_T) - 1
+    @assert length(x0) == D "Initial condition x0 must have length D=$D"
     
-    if n_steps == 0
-        paths = [SVector{D,T}[x0] for _ in 1:n_paths]
-        return PathEnsemble{D,T}(paths, times_T)
-    end
+    dt = T_final / n_steps
+    sqrt_dt = sqrt(dt)
     
-    # Work with matrix: rows = time steps, cols = flattened (path, dimension)
-    # Column layout: [path1_dim1, path1_dim2, ..., path1_dimD, path2_dim1, ...]
-    n_cols = n_paths * D
-    path_matrix = Matrix{T}(undef, n_steps + 1, n_cols)
+    # Initialize array: (n_steps+1) × D × n_paths
+    data = Array{T,3}(undef, n_steps + 1, D, n_paths)
     
     # Set initial conditions
-    @inbounds for path_idx in 1:n_paths
-        for d in 1:D
-            col_idx = (path_idx - 1) * D + d
-            path_matrix[1, col_idx] = x0[d]
-        end
+    @inbounds for path_idx in 1:n_paths, d in 1:D
+        data[1, d, path_idx] = x0[d]
     end
     
-    # Generate all increments at once
-    dt_vec = diff(times_T)
-    increments = randn(rng, n_steps, n_cols)
-    
-    # Scale increments and compute paths
+    # Generate increments and compute paths
     @inbounds for step in 1:n_steps
-        sqrt_dt = sqrt(dt_vec[step])
-        for col in 1:n_cols
-            increment = increments[step, col] * sqrt_dt
-            path_matrix[step + 1, col] = path_matrix[step, col] + increment
+        for path_idx in 1:n_paths, d in 1:D
+            increment = randn(rng, T) * sqrt_dt
+            data[step + 1, d, path_idx] = data[step, d, path_idx] + increment
         end
     end
     
-    # Convert back to Vector{Vector{SVector{D,T}}} format
-    paths = Vector{Vector{SVector{D,T}}}(undef, n_paths)
-    @inbounds for path_idx in 1:n_paths
-        path = Vector{SVector{D,T}}(undef, n_steps + 1)
-        
-        for time_idx in 1:(n_steps + 1)
-            coords = ntuple(d -> path_matrix[time_idx, (path_idx - 1) * D + d], D)
-            path[time_idx] = SVector{D,T}(coords)
-        end
-        
-        paths[path_idx] = path
-    end
-    
-    return PathEnsemble{D,T}(paths, times_T)
+    return ArrayEnsemble{T}(data)
 end
 
-# Convenience methods for 1D case (common usage)
-"""
-    simulate_brownian_1d(; kwargs...)
-
-Convenience function for 1D Brownian motion. Equivalent to:
-`simulate_brownian(SVector{1,Float64}; kwargs...)`
-"""
-simulate_brownian_1d(; kwargs...) = simulate_brownian(SVector{1,Float64}; kwargs...)
+# === Convenience Functions ===
 
 """
-    simulate_brownian_1d_matrix(; kwargs...)
+    simulate_brownian_1d_svector(; kwargs...)
 
-Matrix-based version for 1D Brownian motion.
+Convenience function for 1D Brownian motion using SVector representation.
 """
-simulate_brownian_1d_matrix(; kwargs...) = simulate_brownian_matrix(SVector{1,Float64}; kwargs...)
-
-# Accessor methods
-"""
-    get_path(ensemble::PathEnsemble, path_idx::Int)
-
-Extract a single path from PathEnsemble structure.
-Returns Vector{SVector{D,T}}.
-"""
-get_path(ensemble::PathEnsemble, path_idx::Int) = ensemble.paths[path_idx]
+simulate_brownian_1d_svector(; kwargs...) = 
+    simulate_brownian_svector(SVector{1,Float64}; kwargs...)
 
 """
-    get_times(ensemble::PathEnsemble)
+    simulate_brownian_1d_array(; kwargs...)
 
-Get the time grid.
+Convenience function for 1D Brownian motion using array representation.
 """
-get_times(ensemble::PathEnsemble) = ensemble.times
+simulate_brownian_1d_array(; kwargs...) = 
+    simulate_brownian_array(Float64, 1; kwargs...)
+
+# === Basic Accessors ===
 
 """
-    get_endpoints(ensemble::PathEnsemble)
+    get_path(ensemble::SVectorEnsemble, path_idx::Int)
 
-Get the final values of all paths as Vector{SVector{D,T}}.
+Extract a single path from SVectorEnsemble.
 """
-function get_endpoints(ensemble::PathEnsemble{D,T}) where {D,T}
-    return SVector{D,T}[path[end] for path in ensemble.paths]
+get_path(ensemble::SVectorEnsemble, path_idx::Int) = ensemble.paths[path_idx]
+
+"""
+    get_path(ensemble::ArrayEnsemble, path_idx::Int) -> Matrix
+
+Extract a single path from ArrayEnsemble as (n_steps+1) × D matrix.
+"""
+function get_path(ensemble::ArrayEnsemble{T}, path_idx::Int) where {T}
+    return ensemble.data[:, :, path_idx]
 end
 
 """
-    get_dimension(ensemble::PathEnsemble{D,T}) where {D,T}
+    get_dimension(ensemble) -> Int
 
-Get the spatial dimension D.
+Get the spatial dimension.
 """
-get_dimension(::PathEnsemble{D,T}) where {D,T} = D
+get_dimension(::SVectorEnsemble{D,T}) where {D,T} = D
+get_dimension(ensemble::ArrayEnsemble) = ensemble.dim
 
-"""
-    is_uniform_grid(ensemble::PathEnsemble)
+# === Display Methods ===
 
-Check if the time grid is uniform.
-"""
-is_uniform_grid(ensemble::PathEnsemble) = !isnan(ensemble.dt)
-
-"""
-    path_to_matrix(path::Vector{SVector{D,T}})
-
-Convert a single path to a matrix where columns are dimensions, rows are time steps.
-Useful for plotting or interfacing with other libraries.
-"""
-function path_to_matrix(path::Vector{SVector{D,T}}) where {D,T}
-    n_steps = length(path)
-    mat = Matrix{T}(undef, n_steps, D)
-    @inbounds for i in 1:n_steps, d in 1:D
-        mat[i, d] = path[i][d]
-    end
-    return mat
-end
-
-"""
-    ensemble_to_array(ensemble::PathEnsemble{D,T})
-
-Convert all paths to a 3D array of size (n_steps+1, D, n_paths).
-"""
-function ensemble_to_array(ensemble::PathEnsemble{D,T}) where {D,T}
-    n_steps_plus_1 = ensemble.n_steps + 1
-    result = Array{T,3}(undef, n_steps_plus_1, D, ensemble.n_paths)
-    
-    @inbounds for (path_idx, path) in enumerate(ensemble.paths)
-        for (time_idx, point) in enumerate(path)
-            for d in 1:D
-                result[time_idx, d, path_idx] = point[d]
-            end
-        end
-    end
-    
-    return result
-end
-
-# Display method
-function Base.show(io::IO, ensemble::PathEnsemble{D,T}) where {D,T}
-    println(io, "PathEnsemble{$D,$T}:")
+function Base.show(io::IO, ensemble::SVectorEnsemble{D,T}) where {D,T}
+    println(io, "SVectorEnsemble{$D,$T}:")
     println(io, "  Paths: $(ensemble.n_paths)")
-    println(io, "  Time steps: $(ensemble.n_steps)")  
+    println(io, "  Time steps: $(ensemble.n_steps)")
     println(io, "  Spatial dimension: $D")
-    println(io, "  Time range: [$(first(ensemble.times)), $(last(ensemble.times))]")
-    if is_uniform_grid(ensemble)
-        println(io, "  Uniform dt: $(ensemble.dt)")
-    else
-        println(io, "  Non-uniform time grid")
-    end
     
-    # Show a sample path point for context
-    if ensemble.n_paths > 0 && ensemble.n_steps >= 0
+    if ensemble.n_paths > 0
         sample_point = ensemble.paths[1][1]
         println(io, "  Sample initial point: $sample_point")
     end
 end
 
-# Iterator interface - iterate over paths
-Base.iterate(ensemble::PathEnsemble) = iterate(ensemble.paths)
-Base.iterate(ensemble::PathEnsemble, state) = iterate(ensemble.paths, state)
-Base.length(ensemble::PathEnsemble) = ensemble.n_paths
-Base.getindex(ensemble::PathEnsemble, i::Int) = ensemble.paths[i]
+function Base.show(io::IO, ensemble::ArrayEnsemble{T}) where {T}
+    println(io, "ArrayEnsemble{$T}:")
+    println(io, "  Paths: $(ensemble.n_paths)")
+    println(io, "  Time steps: $(ensemble.n_steps)")
+    println(io, "  Spatial dimension: $(ensemble.dim)")
+    println(io, "  Array size: $(size(ensemble.data))")
+end
+
+# === Iterator Interface ===
+
+# SVectorEnsemble - iterate over paths directly
+Base.iterate(ensemble::SVectorEnsemble) = iterate(ensemble.paths)
+Base.iterate(ensemble::SVectorEnsemble, state) = iterate(ensemble.paths, state)
+Base.length(ensemble::SVectorEnsemble) = ensemble.n_paths
+Base.getindex(ensemble::SVectorEnsemble, i::Int) = ensemble.paths[i]
+
+# ArrayEnsemble - iterate by extracting paths as matrices
+struct ArrayEnsembleIterator{T}
+    ensemble::ArrayEnsemble{T}
+    current::Int
+end
+
+Base.iterate(ensemble::ArrayEnsemble) = 
+    ensemble.n_paths > 0 ? (get_path(ensemble, 1), 2) : nothing
+
+Base.iterate(ensemble::ArrayEnsemble, state::Int) = 
+    state > ensemble.n_paths ? nothing : (get_path(ensemble, state), state + 1)
+
+Base.length(ensemble::ArrayEnsemble) = ensemble.n_paths
+Base.getindex(ensemble::ArrayEnsemble, i::Int) = get_path(ensemble, i)
+
+# Export main types and functions
+export SVectorEnsemble, ArrayEnsemble
+export simulate_brownian_svector, simulate_brownian_array
+export simulate_brownian_1d_svector, simulate_brownian_1d_array
+export get_path, get_dimension
