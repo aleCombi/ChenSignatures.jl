@@ -60,7 +60,7 @@ function call_option_regression_experiment(;
     μ = 0.05,          # GBM drift parameter
     σ = 0.2,           # GBM volatility parameter
     signature_level = 5,
-    underlying_func = path -> path[end][2], #default: euro payoff
+    underlying_func = path -> exp(path[end][2]), #default: euro payoff
     payoff_func = (path, strike) -> max.(underlying_func(path) - strike, 0),  # default: call payoff
     verbose = false,
     regression_method = :ols,  # :ols, :ridge, :lasso, :elasticnet
@@ -329,14 +329,16 @@ asian_arith_call = function (path, K)
     max(avg - K, 0.0)
 end
 
-underlying_func(my_path) = mean(p[2] for p in my_path) # euro option
+underlying_func(my_path) = mean(exp(p[2]) for p in my_path) # asian option
+underlying_func(my_path) = my_path[end][2] # euro option
+
 payoff_func(path, strike) = max.(underlying_func(path) - strike, 0)  # call option
 # Common parameters for all experiments
 # Common parameters for all experiments
 common_params = (
     n_train = 10000,
     n_test = 1000,
-    signature_level = 8,
+    signature_level = 5,
     K = 1.0,
     horizon = 1.0,        # ADD THIS
     n_steps = 100,
@@ -344,16 +346,48 @@ common_params = (
     underlying_func = underlying_func, # euro option
     payoff_func = payoff_func,  # call option
     μ = 0.0,
-    σ = 0.2
+    σ = 0.7
 )
 
 # OLS
-result_ols = call_option_regression_experiment(;
+@time result_ols = call_option_regression_experiment(;
     common_params...,
     regression_method = :ols
 );
 
-scatter(result_ols.test_underlying_values, result_ols.test_predictions, 
-        markersize=2, label="Predictions", alpha=0.6)
+p = scatter(result_ols.test_underlying_values, result_ols.test_predictions, 
+        markersize=2, label="Predictions (Level $(common_params.signature_level))", alpha=0.6, 
+        size=(800, 600), dpi=300, color=:blue)
 scatter!(result_ols.test_underlying_values, result_ols.test_payoffs, 
-        markersize=2, label="True Payoffs", alpha=0.6)
+        markersize=2, label="True Payoffs (Level $(common_params.signature_level))", alpha=0.6, color=:red)
+
+
+
+common_params = (
+    n_train = 10000,
+    n_test = 1000,
+    signature_level = 6,
+    K = 1.0,
+    horizon = 1.0,        # ADD THIS
+    n_steps = 100,
+    verbose = false,
+    underlying_func = underlying_func, # euro option
+    payoff_func = payoff_func,  # call option
+    μ = 0.0,
+    σ = 0.7
+)
+
+# OLS
+@time result_ols = call_option_regression_experiment(;
+    common_params...,
+    regression_method = :ols
+);
+
+
+scatter!(result_ols.test_underlying_values, result_ols.test_predictions, 
+        markersize=2, label="Predictions (Level  $(common_params.signature_level))", alpha=0.6, color=:green)
+
+savefig(p, "regression_plot_$(common_params.signature_level).png")
+
+# scatter!(result_ols.test_underlying_values, result_ols.test_payoffs, 
+#         markersize=2, label="True Payoffs", alpha=0.6)
