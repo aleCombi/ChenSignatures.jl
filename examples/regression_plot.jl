@@ -1,393 +1,327 @@
-using Revise,PathSignatures
+using Revise, PathSignatures
 using GLM, DataFrames, GLMNet
 using Random, Statistics, StaticArrays, Plots
+using Colors
+
+# ------------------------------------------------------------
+# Feature naming helpers
+# ------------------------------------------------------------
 
 """
-Generate word names for dense tensor signature features using existing infrastructure
+    get_signature_feature_names(dim::Int, max_level::Int) -> Vector{String}
+
+Generate word names for dense tensor signature features.
+For dim=2, returns: e1, e2, e1e1, e1e2, e2e1, e2e2, ...
 """
 function get_signature_feature_names(dim::Int, max_level::Int)
     feature_names = String[]
-    
-    # Generate words for each level
     for level in 1:max_level
         level_size = dim^level
         for pos in 1:level_size
-            # Convert linear position to multi-index (base-d representation)
-            indices = Int[]
-            temp_pos = pos - 1  # 0-based
+            # Convert linear index (1-based) to base-d digits (1..dim)
+            digits = Int[]
+            tmp = pos - 1
             for _ in 1:level
-                pushfirst!(indices, (temp_pos % dim) + 1)  # 1-based indices
-                temp_pos ÷= dim
+                pushfirst!(digits, (tmp % dim) + 1)
+                tmp ÷= dim
             end
-            
-            # Create word string: e1, e2 for dim=2 become "e1", "e2", "e1e1", "e1e2", etc.
-            word_str = join(["e$i" for i in indices])
-            push!(feature_names, word_str)
+            push!(feature_names, join(("e$k" for k in digits)))
         end
     end
-    
     return feature_names
 end
 
 """
-Check if a word contains only time component (e1) - should be filtered out
-For time-augmented paths (t, S_t), e1 is time, e2 is price
+    is_time_only_word(word::String) -> Bool
+
+For time-augmented paths with channels (t, S_t) mapped to (e1, e2),
+returns true if the word contains only e1 (e.g., "e1", "e1e1", ...).
 """
 function is_time_only_word(word_str::String)
-    # A word is time-only if it contains only "e1" (like "e1", "e1e1", "e1e1e1", etc.)
-    # We check if all characters after removing "e" and "1" are gone
     cleaned = replace(word_str, "e1" => "")
     return isempty(cleaned)
 end
 
-"""
-Simple call option payoff regression against path signatures.
-We regress (S_T - K) against the signature of time-augmented paths (t, S_t).
+# ------------------------------------------------------------
+# Core experiment
+# ------------------------------------------------------------
 
-Supports multiple regression methods:
-- :ols - Ordinary Least Squares (default)
-- :ridge - Ridge regression (L2 penalty)
-- :lasso - Lasso regression (L1 penalty)
-- :elasticnet - Elastic Net (L1 + L2 penalty)
+"""
+    call_option_regression_experiment(; kwargs...) -> NamedTuple
+
+Simulate GBM paths for a single underlying; build time-augmented paths (t, S_t);
+compute signatures up to `signature_level`; filter out time-only features; and
+regress a payoff against the remaining features.
+
+Supported regression methods:
+- :ols         Ordinary Least Squares (GLM)
+- :ridge       Ridge (GLMNet; alpha=0)
+- :lasso       Lasso (GLMNet; alpha=1)
+- :elasticnet  Elastic net (GLMNet; alpha=l1_ratio)
 """
 function call_option_regression_experiment(;
-    n_train = 600,
-    n_test = 200,
-    S0 = 1.0,           #spot price
-    K = 1.0,           # strike price  
-    horizon = 1.0,     # time to maturity
-    n_steps = 50,      # path discretization
-    μ = 0.05,          # GBM drift parameter
-    σ = 0.2,           # GBM volatility parameter
-    signature_level = 5,
-    underlying_func = path -> exp(path[end][2]), #default: euro payoff
-    payoff_func = (path, strike) -> max.(underlying_func(path) - strike, 0),  # default: call payoff
-    verbose = false,
-    regression_method = :ols,  # :ols, :ridge, :lasso, :elasticnet
-    alpha = 1.0,       # regularization strength (for ridge/lasso/elasticnet)
-    lambda = nothing,  # if provided, use this lambda instead of CV
-    l1_ratio = 0.5     # for elasticnet: 0=ridge, 1=lasso
+    n_train::Int = 600,
+    n_test::Int = 200,
+    S0::Float64 = 1.0,
+    K::Float64 = 1.0,
+    horizon::Float64 = 1.0,
+    n_steps::Int = 50,
+    μ::Float64 = 0.05,
+    σ::Float64 = 0.2,
+    signature_level::Int = 5,
+    underlying_func::Function = path -> path[end][2], # Euro payoff: terminal S
+    payoff_func::Function = (path, strike) -> max(underlying_func(path) - strike, 0.0),
+    regression_method::Symbol = :ols,
+    alpha::Float64 = 1.0,
+    lambda = nothing,
+    l1_ratio::Float64 = 0.5,
+    verbose::Bool = false,
 )
-    # No Random.seed! - let it be random each time
-    logS_0 = SVector(log(S0))
-    # Generate training data
-    train_ensemble = PathSignatures.simulate_loggbm_svector(
-        SVector{1,Float64}; 
-        n_paths = n_train,
-        horizon = horizon,
-        n_steps = n_steps,
-        y0 = logS_0,
-        μ = SVector(μ),
-        σ = SVector(σ)
+    # ---- Simulate GBM in log-space, then exponentiate ----
+    logS0 = SVector(log(S0))
+    train_ens_log = PathSignatures.simulate_loggbm_svector(
+        SVector{1,Float64};
+        n_paths = n_train, horizon = horizon, n_steps = n_steps,
+        y0 = logS0, μ = SVector(μ), σ = SVector(σ),
     )
-    train_ensemble = exp(train_ensemble)
+    test_ens_log = PathSignatures.simulate_loggbm_svector(
+        SVector{1,Float64};
+        n_paths = n_test, horizon = horizon, n_steps = n_steps,
+        y0 = logS0, μ = SVector(μ), σ = SVector(σ),
+    )
+    train_ens = exp(train_ens_log)
+    test_ens  = exp(test_ens_log)
 
-    # Generate test data  
-    test_ensemble = PathSignatures.simulate_loggbm_svector(
-        SVector{1,Float64}; 
-        n_paths = n_test,
-        horizon = horizon,
-        n_steps = n_steps,
-        y0 = logS_0,
-        μ = SVector(μ),
-        σ = SVector(σ)
-    ) 
-    test_ensemble = exp(test_ensemble)
-    
-    # Convert to time-augmented paths (t, S_t)
+    # ---- Time augmentation: path of SVector{2,Float64} with (t, S_t) ----
     dt = horizon / n_steps
-    
-    function augment_path(path_1d)
-        path_2d = Vector{SVector{2,Float64}}(undef, length(path_1d))
+    augment = function(path_1d)
+        out = Vector{SVector{2,Float64}}(undef, length(path_1d))
         @inbounds for j in eachindex(path_1d)
             t = (j - 1) * dt
             S_t = path_1d[j][1]
-            path_2d[j] = SVector(t, S_t)
+            out[j] = SVector(t, S_t)
         end
-        return path_2d
+        out
     end
-    
-    train_time_augmented_paths = [augment_path(p) for p in train_ensemble.paths]
-    test_time_augmented_paths = [augment_path(p) for p in test_ensemble.paths]
-    
-    # Create ensembles
-    train_augmented_ensemble = SVectorEnsemble{2,Float64}(train_time_augmented_paths)
-    test_augmented_ensemble = SVectorEnsemble{2,Float64}(test_time_augmented_paths)
-    
-    # Compute payoffs
-    train_payoffs = [payoff_func(p, K) for p in train_time_augmented_paths]
-    test_payoffs = [payoff_func(p, K) for p in test_time_augmented_paths]
+    train_paths_2d = [augment(p) for p in train_ens.paths]
+    test_paths_2d  = [augment(p) for p in test_ens.paths]
 
-    # Compute signatures
-    train_signatures = [Tensor{Float64}(2, signature_level) for _ in 1:n_train]
-    PathSignatures.batch_signatures!(train_signatures, train_augmented_ensemble)
-    
-    test_signatures = [Tensor{Float64}(2, signature_level) for _ in 1:n_test]
-    PathSignatures.batch_signatures!(test_signatures, test_augmented_ensemble)
-    
-    # Extract features (skip level-0 constant term)
-    function extract_features(sig::Tensor{Float64})
+    train_ens_2d = SVectorEnsemble{2,Float64}(train_paths_2d)
+    test_ens_2d  = SVectorEnsemble{2,Float64}(test_paths_2d)
+
+    # ---- Targets ----
+    train_payoffs = [payoff_func(p, K) for p in train_paths_2d]
+    test_payoffs  = [payoff_func(p, K) for p in test_paths_2d]
+
+    # ---- Signatures ----
+    train_sigs = [Tensor{Float64}(2, signature_level) for _ in 1:n_train]
+    test_sigs  = [Tensor{Float64}(2, signature_level) for _ in 1:n_test]
+    PathSignatures.batch_signatures!(train_sigs, train_ens_2d)
+    PathSignatures.batch_signatures!(test_sigs,  test_ens_2d)
+
+    # ---- Extract features (skip level-0 constant) ----
+    extract_features = function(sig::Tensor{Float64})
         start_idx = sig.offsets[2] + 1
-        return sig.coeffs[start_idx:end]
+        @view sig.coeffs[start_idx:end]
     end
-    
-    # Build feature matrices  
-    train_feature_matrix = reduce(hcat, [extract_features(sig) for sig in train_signatures])'
-    test_feature_matrix = reduce(hcat, [extract_features(sig) for sig in test_signatures])'
-    
-    # Generate feature names
+    train_X_full = reduce(hcat, (extract_features(sig) for sig in train_sigs))'
+    test_X_full  = reduce(hcat, (extract_features(sig) for sig in test_sigs))'
+
+    # ---- Name & filter features (remove pure-time) ----
     all_feature_names = get_signature_feature_names(2, signature_level)
-    
-    # Filter out time-only features (e.g., e1, e1e1, e1e1e1, etc.)
-    # Keep only features that involve the price process (e2)
-    feature_mask = .!is_time_only_word.(all_feature_names)
-    filtered_feature_names = all_feature_names[feature_mask]
-    
-    # Apply filter to feature matrices
-    train_feature_matrix = train_feature_matrix[:, feature_mask]
-    test_feature_matrix = test_feature_matrix[:, feature_mask]
-    
-    n_total_features = length(all_feature_names)
-    n_filtered_features = length(filtered_feature_names)
-    n_removed = n_total_features - n_filtered_features
-    
-    # Create DataFrame for GLM
-    train_df = DataFrame(train_feature_matrix, filtered_feature_names)
-    train_df.payoff = train_payoffs
-    
-    # Fit regression model based on method
-    if regression_method == :ols
-        # Standard OLS using GLM
-        feature_formula = join(filtered_feature_names, " + ")
-        formula_str = "payoff ~ " * feature_formula
-        formula = eval(Meta.parse("@formula($formula_str)"))
-        
-        model = lm(formula, train_df)
-        train_pred = GLM.predict(model)
-        
-        test_df = DataFrame(test_feature_matrix, filtered_feature_names)
-        test_pred = GLM.predict(model, test_df)
-        
-    elseif regression_method in [:ridge, :lasso, :elasticnet]
-        # Use GLMNet for regularized regression
-        X_train = train_feature_matrix
-        y_train = train_payoffs
-        X_test = test_feature_matrix
-        
-        # Set alpha parameter for GLMNet
-        # alpha=0 is ridge, alpha=1 is lasso, 0<alpha<1 is elasticnet
-        glmnet_alpha = if regression_method == :ridge
-            0.0
-        elseif regression_method == :lasso
-            1.0
-        else  # elasticnet
-            l1_ratio
-        end
-        
-        if lambda === nothing
-            # Use cross-validation to select lambda
-            cv_model = glmnetcv(X_train, y_train; alpha=glmnet_alpha)
-            model = cv_model
-            
-            # Get predictions using lambda.min (minimum CV error)
-            train_pred = GLMNet.predict(cv_model, X_train)
-            test_pred = GLMNet.predict(cv_model, X_test)
-        else
-            # Use specified lambda
-            model = glmnet(X_train, y_train; alpha=glmnet_alpha)
-            train_pred = GLMNet.predict(model, X_train; s=[lambda])
-            test_pred = GLMNet.predict(model, X_test; s=[lambda])
-        end
-        
-    else
-        error("Unknown regression method: $regression_method. Use :ols, :ridge, :lasso, or :elasticnet")
-    end
-    
-    # Compute metrics
-    train_residuals = train_payoffs - train_pred
-    train_r2 = 1 - sum(train_residuals.^2) / sum((train_payoffs .- mean(train_payoffs)).^2)
-    train_rmse = sqrt(mean(train_residuals.^2))
-    train_mae = mean(abs.(train_residuals))
-    
-    test_residuals = test_payoffs - test_pred
-    test_r2 = 1 - sum(test_residuals.^2) / sum((test_payoffs .- mean(test_payoffs)).^2)
-    test_rmse = sqrt(mean(test_residuals.^2))
-    test_mae = mean(abs.(test_residuals))
-    
-    # Print clean results
-    println("\n" * "="^60)
-    println("CALL OPTION PAYOFF REGRESSION ($(uppercase(string(regression_method))))")
-    println("="^60)
-    println("Setup: K=$K, T=$horizon, Steps=$n_steps, Signature Level=$signature_level")
-    println("GBM:   μ=$μ, σ=$σ")
-    println("Data:  Train=$n_train paths, Test=$n_test paths")
-    println("Features: $n_filtered_features used ($n_removed time-only features removed)")
-    if regression_method != :ols
-        if lambda === nothing
-            println("Regularization: CV-selected λ")
-        else
-            println("Regularization: λ=$lambda")
-        end
-    end
-    println("-"^60)
-    
-    println("\nPayoff Statistics:")
-    println("  Train: Mean=$(round(mean(train_payoffs), digits=4)), Std=$(round(std(train_payoffs), digits=4))")
-    println("  Test:  Mean=$(round(mean(test_payoffs), digits=4)), Std=$(round(std(test_payoffs), digits=4))")
-    
-    println("\nRegression Performance:")
-    println("  Training:   R²=$(round(train_r2, digits=4))  RMSE=$(round(train_rmse, digits=4))  MAE=$(round(train_mae, digits=4))")
-    println("  Test:       R²=$(round(test_r2, digits=4))  RMSE=$(round(test_rmse, digits=4))  MAE=$(round(test_mae, digits=4))")
-    
-    r2_gap = train_r2 - test_r2
-    generalization_status = r2_gap > 0.1 ? "⚠️  Overfitting" : "✅ Good"
-    println("  R² Gap:     $(round(r2_gap, digits=4)) ($generalization_status)")
-    
-    # Top features
-    if regression_method == :ols
-        coeffs = GLM.coef(model)[2:end]  # skip intercept
-    else
-        # For GLMNet, extract coefficients at the selected lambda
-        if lambda === nothing
-            # Use lambda.min from CV
-            coeffs = vec(model.path.betas[:, argmin(model.meanloss)])
-        else
-            # Use specified lambda - find closest one
-            lambda_idx = argmin(abs.(model.lambda .- lambda))
-            coeffs = vec(model.betas[:, lambda_idx])
-        end
-    end
-    
-    importance = abs.(coeffs)
-    perm = sortperm(importance, rev=true)
-    
-    # Count non-zero coefficients (for regularized methods)
-    n_nonzero = sum(coeffs .!= 0)
-    
-    println("\nTop 5 Features (by |coefficient|):")
-    for i in 1:min(5, length(coeffs))
-        idx = perm[i]
-        println("  $(rpad(filtered_feature_names[idx], 10)) → $(round(coeffs[idx], digits=6))")
-    end
-    
-    if regression_method in [:ridge, :lasso, :elasticnet]
-        println("\nSparsity: $n_nonzero / $(length(coeffs)) non-zero coefficients")
-    end
-    
-    println("\nFeature Interpretation:")
-    println("  e1     = time ∫dt (REMOVED)")
-    println("  e2     = stock ∫dS_t") 
-    println("  e1e2   = time-stock ∫∫dt⊗dS_t")
-    println("  e2e2   = quadratic variation ∫∫dS_t⊗dS_t")
-    println("  All pure time terms (e1, e1e1, ...) are excluded")
-    println("="^60 * "\n")
-    
-    if verbose
+    keep_mask = .!is_time_only_word.(all_feature_names)
+    kept_names = all_feature_names[keep_mask]
+    train_X = train_X_full[:, keep_mask]
+    test_X  = test_X_full[:, keep_mask]
+
+    # ---- Fit model ----
+    model, yhat_train, yhat_test = begin
         if regression_method == :ols
-            println("\nFull Model Summary:")
-            println(model)
-        elseif regression_method in [:ridge, :lasso, :elasticnet]
-            println("\nRegularization Path Info:")
-            println("  Number of lambdas: $(length(model.lambda))")
+            df_train = DataFrame(train_X, kept_names)
+            df_train.payoff = train_payoffs
+            rhs = join(kept_names, " + ")
+            f = eval(Meta.parse("@formula(payoff ~ $rhs)"))
+            mdl = lm(f, df_train)
+            df_test = DataFrame(test_X, kept_names)
+            (mdl, GLM.predict(mdl), GLM.predict(mdl, df_test))
+
+        elseif regression_method in (:ridge, :lasso, :elasticnet)
+            α_glmnet = regression_method == :ridge ? 0.0 :
+                       regression_method == :lasso ? 1.0 : l1_ratio
             if lambda === nothing
-                println("  Best lambda (CV): $(model.lambda[argmin(model.meanloss)])")
-                println("  Min CV error: $(minimum(model.meanloss))")
+                cv = glmnetcv(train_X, train_payoffs; alpha=α_glmnet)
+                (cv, GLMNet.predict(cv, train_X), GLMNet.predict(cv, test_X))
+            else
+                path = glmnet(train_X, train_payoffs; alpha=α_glmnet)
+                (path,
+                 GLMNet.predict(path, train_X; s=[lambda]),
+                 GLMNet.predict(path, test_X; s=[lambda]))
             end
+        else
+            error("Unknown regression method: $regression_method")
         end
     end
-    
+
+    # ---- Metrics ----
+    resid_train = train_payoffs .- yhat_train
+    resid_test  = test_payoffs  .- yhat_test
+
+    r2_train = 1 - sum(resid_train.^2) / sum((train_payoffs .- mean(train_payoffs)).^2)
+    r2_test  = 1 - sum(resid_test.^2)  / sum((test_payoffs  .- mean(test_payoffs)).^2)
+    rmse_train = sqrt(mean(resid_train.^2))
+    rmse_test  = sqrt(mean(resid_test.^2))
+    mae_train  = mean(abs.(resid_train))
+    mae_test   = mean(abs.(resid_test))
+
+    # ---- Coefficients (for reference) ----
+    coeffs = if regression_method == :ols
+        GLM.coef(model)[2:end]               # drop intercept
+    else
+        if lambda === nothing
+            model.path.betas[:, argmin(model.meanloss)]
+        else
+            idx = argmin(abs.(model.lambda .- lambda))
+            model.betas[:, idx]
+        end
+    end
+
     return (
-    model = model,
-    train_payoffs = train_payoffs,
-    test_payoffs = test_payoffs,
-    train_predictions = train_pred,
-    test_predictions = test_pred,
-    test_underlying_values = [underlying_func(p) for p in test_time_augmented_paths],  # ADD THIS LINE
-    train_features = train_feature_matrix,
-    test_features = test_feature_matrix,
-    feature_names = filtered_feature_names,
-    all_feature_names = all_feature_names,
-    n_features_removed = n_removed,
-    coefficients = coeffs,
-    train_r2 = train_r2,
-    test_r2 = test_r2,
-    train_rmse = train_rmse,
-    test_rmse = test_rmse,
-    train_mae = train_mae,
-    test_mae = test_mae
-)
+        model = model,
+        train_payoffs = train_payoffs,
+        test_payoffs = test_payoffs,
+        train_predictions = yhat_train,
+        test_predictions = yhat_test,
+        test_underlying_values = [underlying_func(p) for p in test_paths_2d],
+        train_features = train_X,
+        test_features = test_X,
+        feature_names = kept_names,
+        all_feature_names = all_feature_names,
+        n_features_removed = length(all_feature_names) - length(kept_names),
+        coefficients = coeffs,
+        train_r2 = r2_train,
+        test_r2 = r2_test,
+        train_rmse = rmse_train,
+        test_rmse = rmse_test,
+        train_mae = mae_train,
+        test_mae = mae_test,
+    )
 end
 
-# Run experiments with different methods
-println("\n" * "="^60)
-println("COMPARING REGRESSION METHODS")
-println("="^60)
+# ------------------------------------------------------------
+# Plot multiple signature levels
+# ------------------------------------------------------------
 
-asian_arith_call = function (path, K)
-    # path is Vector{SVector{2,Float64}} with entries (t, S_t)
-    avg = mean(p[2] for p in path)
-    max(avg - K, 0.0)
+"""
+    plot_signature_regressions(sig_levels; kwargs...) -> plt
+
+Run `call_option_regression_experiment` for each `signature_level` in `sig_levels`
+and plot predicted vs. true payoffs for each level on the same graph.
+
+Example:
+    plt = plot_signature_regressions([5, 6]; n_train=10000, n_test=1000)
+
+Keyword args (forwarded to the experiment):
+    n_train=10_000, n_test=1_000, S0=1.0, K=1.0, horizon=1.0, n_steps=100,
+    μ=0.0, σ=0.7, verbose=false, underlying_func, payoff_func
+"""
+function plot_signature_regressions(sig_levels::AbstractVector{<:Integer};
+    n_train::Int = 10_000,
+    n_test::Int = 1_000,
+    S0::Float64 = 1.0,
+    K::Float64 = 1.0,
+    horizon::Float64 = 1.0,
+    n_steps::Int = 100,
+    μ::Float64 = 0.0,
+    σ::Float64 = 0.7,
+    verbose::Bool = false,
+    underlying_func = path -> path[end][2],                    # S_T (Euro)
+    payoff_func     = (path, K) -> max(underlying_func(path) - K, 0.0),
+)
+    # Helper to set reasonable axis limits
+    autoscale_range(v; pad=0.05) = begin
+        q1, q2 = quantile(v, (0.01, 0.99))
+        span   = max(eps(), q2 - q1)
+        (q1 - pad*span, q2 + pad*span)
+    end
+
+    # Predefine markers/colors for distinction
+    shapes = [:circle, :utriangle, :rect, :diamond, :star5, :cross, :pentagon]
+    cols   = [:royalblue, :purple, :seagreen, :darkorange, :crimson, :goldenrod, :teal]
+
+    # Run and collect results
+    results = Dict{Int, NamedTuple}()
+    for (i, L) in enumerate(sig_levels)
+        params = (
+            n_train=n_train, n_test=n_test, S0=S0, K=K, horizon=horizon,
+            n_steps=n_steps, μ=μ, σ=σ, verbose=verbose,
+            underlying_func=underlying_func, payoff_func=payoff_func,
+            signature_level=L
+        )
+        res = call_option_regression_experiment(; params..., regression_method=:ols)
+        results[L] = (
+            x = res.test_underlying_values,
+            y_true = res.test_payoffs,
+            y_pred = res.test_predictions,
+        )
+    end
+
+    # Combine all data for scaling
+    all_x = reduce(vcat, [r.x for r in values(results)])
+    all_y = reduce(vcat, [vcat(r.y_true, r.y_pred) for r in values(results)])
+    xlims = autoscale_range(all_x)
+    ylims = autoscale_range(all_y)
+
+    # Create figure (small, crisp markers; no jitter)
+    plt = plot(
+        size=(950, 650), dpi=300, legend=:topright, grid=:on,
+        framestyle=:box, xlim=xlims, ylim=ylims,
+        xlabel="Underlying value", ylabel="Payoff / Prediction",
+        title="Signature Regression vs True Payoff"
+    )
+
+    for (i, L) in enumerate(sig_levels)
+        color = cols[mod1(i, length(cols))]
+        shape = shapes[mod1(i, length(shapes))]
+
+        scatter!(
+            plt,
+            results[L].x, results[L].y_pred;
+            label = "Prediction (Level $L)",
+            markershape = shape,
+            markersize = 2.0,
+            markercolor = color,      # <- pass the Symbol directly
+            seriesalpha = 0.40,       # <- handles transparency
+            markerstrokecolor = :black,
+            markerstrokewidth = 0.1,
+        )
+    end
+
+
+    # Add true payoff (use the first level as reference)
+    ref_level = first(sig_levels)
+    scatter!(
+        plt,
+        results[ref_level].x, results[ref_level].y_true;
+        label = "True payoff",
+        markershape = :diamond,
+        markersize = 1.8,
+        markercolor = :black,
+        seriesalpha = 0.85,
+    )
+
+    return plt
 end
 
-underlying_func(my_path) = mean(exp(p[2]) for p in my_path) # asian option
-underlying_func(my_path) = my_path[end][2] # euro option
+# ------------------------------------------------------------
+# Example usage (uncomment to run)
+# ------------------------------------------------------------
 
-payoff_func(path, strike) = max.(underlying_func(path) - strike, 0)  # call option
-# Common parameters for all experiments
-# Common parameters for all experiments
-common_params = (
-    n_train = 10000,
-    n_test = 1000,
-    signature_level = 5,
-    K = 1.0,
-    horizon = 1.0,        # ADD THIS
-    n_steps = 100,
-    verbose = false,
-    underlying_func = underlying_func, # euro option
-    payoff_func = payoff_func,  # call option
-    μ = 0.0,
-    σ = 0.7
+underlying_euro(path)  = path[end][2]
+payoff_call(path, K)   = max(underlying_euro(path) - K, 0.0)
+plt = plot_signature_regressions([4,5,6,7,8];
+    n_train=10_000, n_test=1_000, μ=0.0, σ=0.001, horizon=1.0, n_steps=100,
+    underlying_func = underlying_euro,
+    payoff_func = payoff_call
 )
-
-# OLS
-@time result_ols = call_option_regression_experiment(;
-    common_params...,
-    regression_method = :ols
-);
-
-p = scatter(result_ols.test_underlying_values, result_ols.test_predictions, 
-        markersize=2, label="Predictions (Level $(common_params.signature_level))", alpha=0.6, 
-        size=(800, 600), dpi=300, color=:blue)
-scatter!(result_ols.test_underlying_values, result_ols.test_payoffs, 
-        markersize=2, label="True Payoffs (Level $(common_params.signature_level))", alpha=0.6, color=:red)
-
-
-
-common_params = (
-    n_train = 10000,
-    n_test = 1000,
-    signature_level = 6,
-    K = 1.0,
-    horizon = 1.0,        # ADD THIS
-    n_steps = 100,
-    verbose = false,
-    underlying_func = underlying_func, # euro option
-    payoff_func = payoff_func,  # call option
-    μ = 0.0,
-    σ = 0.7
-)
-
-# OLS
-@time result_ols = call_option_regression_experiment(;
-    common_params...,
-    regression_method = :ols
-);
-
-
-scatter!(result_ols.test_underlying_values, result_ols.test_predictions, 
-        markersize=2, label="Predictions (Level  $(common_params.signature_level))", alpha=0.6, color=:green)
-
-savefig(p, "regression_plot_$(common_params.signature_level).png")
-
-# scatter!(result_ols.test_underlying_values, result_ols.test_payoffs, 
-#         markersize=2, label="True Payoffs", alpha=0.6)
+savefig(plt, "regression_plot_levels_5_6.png")
+display(plt)
