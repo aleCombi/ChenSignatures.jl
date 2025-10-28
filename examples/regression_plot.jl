@@ -531,17 +531,252 @@ function plot_signature_regressions(sig_levels::AbstractVector{<:Integer};
 end
 
 # ------------------------------------------------------------
+# Generic parameter sweep and overlay plot
+# ------------------------------------------------------------
+using Plots
+
+# small helper: expand scalars to length-n vectors, or validate vector length=n
+_expand(x, n) = (x isa AbstractVector ? (length(x)==n ? x : error("Length $(length(x)) ≠ $n")) : fill(x, n))
+
+"""
+    plot_signature_sweep(; kwargs...) -> (plt, results)
+
+Run `call_option_regression_experiment` multiple times while varying any subset of
+parameters. Each parameter may be a scalar (applied to all runs) or a vector of
+length `n` (one value per run). All vector-valued parameters must share the same
+length `n`. The plot shows `n` prediction scatters overlaid, plus one true-payoff
+scatter for reference.
+
+Returns:
+- `plt`     : the Plots.jl figure
+- `results` : Vector of NamedTuples with x, y_true, y_pred, and the params used
+
+Vary any of these (scalar or vector): signature_level, n_train, n_test, S0, K,
+horizon, n_steps, μ, σ, regression_method, alpha, lambda, l1_ratio, verbose,
+normalize_features, normalize_target, path_transform.
+`underlying_func` and `payoff_func` should be scalars (single functions).
+"""
+# Helpers: length detection and expansion (works for scalars, vectors, and functions)
+_len1(x) = x isa AbstractVector ? length(x) : 1
+_expand_any(x, n) = x isa AbstractVector ? (length(x) == n ? x : error("Length $(length(x)) ≠ $n")) : fill(x, n)
+
+"""
+    plot_signature_sweep(; kwargs...) -> (plt, results)
+
+Each parameter may be a scalar or a vector of length n. This now ALSO applies to:
+- `underlying_func`
+- `payoff_func`
+- `path_transform`
+
+If a vector is provided, it must have the same length n as other vector-valued params.
+"""
+function plot_signature_sweep(;
+    # --- sweep-able params (scalars or vectors) ---
+    signature_level      = 5,
+    n_train              = 10_000,
+    n_test               = 1_000,
+    S0                   = 1.0,
+    K                    = 1.0,
+    horizon              = 1.0,
+    n_steps              = 100,
+    μ                    = 0.0,
+    σ                    = 0.2,
+    regression_method    = :ols,
+    alpha                = 1.0,
+    lambda               = nothing,
+    l1_ratio             = 0.5,
+    verbose              = false,
+    normalize_features   = true,
+    normalize_target     = false,
+    path_transform       = identity,   # can be Function or Vector{<:Function}
+
+    # --- functions (now allow scalar Function OR Vector{<:Function}) ---
+    underlying_func      = (path -> path[end][2]),
+    payoff_func          = (path, K) -> max(underlying_func(path) - K, 0.0),
+
+    # --- plotting cosmetics ---
+    title            = "Signature Regression – Parameter Sweep",
+    legend_position  = :topright,
+    markersize_pred  = 2.0,
+    markersize_true  = 1.8,
+    seriesalpha_pred = 0.40,
+)
+    # Decide n from all possibly-vector arguments (including functions)
+    lens = Int[
+        _len1(signature_level), _len1(n_train), _len1(n_test), _len1(S0), _len1(K),
+        _len1(horizon), _len1(n_steps), _len1(μ), _len1(σ),
+        _len1(regression_method), _len1(alpha), _len1(lambda), _len1(l1_ratio),
+        _len1(verbose), _len1(normalize_features), _len1(normalize_target),
+        _len1(path_transform), _len1(underlying_func), _len1(payoff_func)
+    ]
+    n = maximum(lens)
+    if any(l -> !(l == 1 || l == n), lens)
+        error("All varying parameters must be scalars or length-$n vectors (found lengths: $(lens))")
+    end
+
+    # Expand everything to length n (functions included)
+    signature_level_v    = _expand_any(signature_level, n)
+    n_train_v            = _expand_any(n_train, n)
+    n_test_v             = _expand_any(n_test, n)
+    S0_v                 = _expand_any(S0, n)
+    K_v                  = _expand_any(K, n)
+    horizon_v            = _expand_any(horizon, n)
+    n_steps_v            = _expand_any(n_steps, n)
+    μ_v                  = _expand_any(μ, n)
+    σ_v                  = _expand_any(σ, n)
+    regression_method_v  = _expand_any(regression_method, n)
+    alpha_v              = _expand_any(alpha, n)
+    lambda_v             = _expand_any(lambda, n)
+    l1_ratio_v           = _expand_any(l1_ratio, n)
+    verbose_v            = _expand_any(verbose, n)
+    normalize_features_v = _expand_any(normalize_features, n)
+    normalize_target_v   = _expand_any(normalize_target, n)
+    path_transform_v     = _expand_any(path_transform, n)
+    underlying_func_v    = _expand_any(underlying_func, n)
+    payoff_func_v        = _expand_any(payoff_func, n)
+
+    results = Vector{NamedTuple}(undef, n)
+    all_x = Float64[]; all_y = Float64[]
+
+    for i in 1:n
+        res = call_option_regression_experiment(
+            ; n_train = n_train_v[i],
+              n_test  = n_test_v[i],
+              S0      = S0_v[i],
+              K       = K_v[i],
+              horizon = horizon_v[i],
+              n_steps = n_steps_v[i],
+              μ       = μ_v[i],
+              σ       = σ_v[i],
+              signature_level = signature_level_v[i],
+              underlying_func = underlying_func_v[i],
+              payoff_func     = payoff_func_v[i],
+              regression_method = regression_method_v[i],
+              alpha = alpha_v[i],
+              lambda = lambda_v[i],
+              l1_ratio = l1_ratio_v[i],
+              verbose = verbose_v[i],
+              normalize_features = normalize_features_v[i],
+              normalize_target   = normalize_target_v[i],
+              path_transform     = path_transform_v[i],
+        )
+
+        x = res.test_underlying_values
+        y_true = res.test_payoffs
+        y_pred = res.test_predictions
+
+        results[i] = (
+            x = x, y_true = y_true, y_pred = y_pred,
+            params = (
+                signature_level = signature_level_v[i],
+                n_train = n_train_v[i], n_test = n_test_v[i],
+                S0 = S0_v[i], K = K_v[i], horizon = horizon_v[i], n_steps = n_steps_v[i],
+                μ = μ_v[i], σ = σ_v[i],
+                regression_method = regression_method_v[i],
+                alpha = alpha_v[i], lambda = lambda_v[i], l1_ratio = l1_ratio_v[i],
+                normalize_features = normalize_features_v[i],
+                normalize_target   = normalize_target_v[i],
+            )
+        )
+
+        append!(all_x, x)
+        append!(all_y, y_true); append!(all_y, y_pred)
+    end
+
+    # Axis limits
+    autoscale_range(v; pad=0.05) = begin
+        q1, q2 = quantile(v, (0.01, 0.99))
+        span = max(eps(), q2 - q1)
+        (q1 - pad*span, q2 + pad*span)
+    end
+    xlims = autoscale_range(all_x)
+    ylims = autoscale_range(all_y)
+
+    # Palette / shapes
+    shapes = [:circle, :utriangle, :rect, :diamond, :star5, :cross, :pentagon]
+    cols   = [:royalblue, :purple, :seagreen, :darkorange, :crimson, :goldenrod, :teal]
+
+    plt = plot(
+        size=(980, 680), dpi=300,
+        legend=legend_position, grid=:on, framestyle=:box,
+        xlim=xlims, ylim=ylims,
+        xlabel="Underlying value", ylabel="Payoff / Prediction",
+        title=title,
+    )
+
+    # Identify varied params for compact labels
+    varied = Dict(
+        :signature_level => length(unique(signature_level_v)) > 1,
+        :σ => length(unique(σ_v)) > 1,
+        :μ => length(unique(μ_v)) > 1,
+        :K => length(unique(K_v)) > 1,
+        :horizon => length(unique(horizon_v)) > 1,
+        :n_steps => length(unique(n_steps_v)) > 1,
+        :regression_method => length(unique(regression_method_v)) > 1,
+        :lambda => length(unique(lambda_v)) > 1,
+        :l1_ratio => length(unique(l1_ratio_v)) > 1,
+    )
+
+    # Plot n predictions
+    for i in 1:n
+        color = cols[mod1(i, length(cols))]
+        shape = shapes[mod1(i, length(shapes))]
+        p = results[i].params
+        parts = String[]
+        varied[:signature_level]    && push!(parts, "L=$(p.signature_level)")
+        varied[:σ]                  && push!(parts, "σ=$(round(p.σ, digits=3))")
+        varied[:μ]                  && push!(parts, "μ=$(round(p.μ, digits=3))")
+        varied[:K]                  && push!(parts, "K=$(round(p.K, digits=3))")
+        varied[:horizon]            && push!(parts, "T=$(round(p.horizon, digits=3))")
+        varied[:n_steps]            && push!(parts, "steps=$(p.n_steps)")
+        varied[:regression_method]  && push!(parts, "meth=$(p.regression_method)")
+        varied[:lambda]             && p.lambda !== nothing && push!(parts, "λ=$(round(p.lambda, digits=4))")
+        varied[:l1_ratio]           && push!(parts, "l1=$(round(p.l1_ratio, digits=2))")
+        lab = isempty(parts) ? "Run $i" : join(parts, ", ")
+
+        scatter!(plt, results[i].x, results[i].y_pred;
+            label = "Pred: " * lab,
+            markershape = shape,
+            markersize = markersize_pred,
+            markercolor = color,
+            seriesalpha = seriesalpha_pred,
+            markerstrokecolor = :black,
+            markerstrokewidth = 0.1,
+        )
+    end
+
+    # One true-payoff cloud (from run 1)
+    scatter!(plt, results[1].x, results[1].y_true;
+        label = "True payoff",
+        markershape = :diamond,
+        markersize = markersize_true,
+        markercolor = :black,
+        seriesalpha = 0.85,
+    )
+
+    return plt, results
+end
+
+
+# ------------------------------------------------------------
 # Example usage (uncomment to run)
 # ------------------------------------------------------------
 
-path_transform = identity
-underlying_euro(log_path)  = exp(log_path[end][2])
+path_transform_log = identity
+underlying_euro_log(log_path)  = exp(log_path[end][2])
+payoff_call_log(log_path, K)   = max(underlying_euro_log(log_path) - K, 0.0)
+
+path_transform = exp
+underlying_euro(path)  = path[end][2]
 payoff_call(log_path, K)   = max(underlying_euro(log_path) - K, 0.0)
-plt = plot_signature_regressions([5,6];
-    n_train=10_000, n_test=1_000, μ=0.0, σ=0.001, horizon=1.0, n_steps=100,
-    underlying_func = underlying_euro,
-    payoff_func = payoff_call,
-    path_transform = path_transform
+
+plt, res = plot_signature_sweep(
+    ; n_train=10_000, n_test=1_000,
+     signature_level=[5,5,8,8],
+      σ=0.7, μ=0.0, K=1.0, horizon=1.0, n_steps=100,
+      underlying_func = [underlying_euro_log, underlying_euro,underlying_euro_log, underlying_euro],
+      payoff_func     = [   payoff_call_log,   payoff_call,   payoff_call_log,   payoff_call],
+      path_transform  = [path_transform_log, path_transform,path_transform_log, path_transform],
 )
-savefig(plt, "regression_plot_levels_5_6_old.png")
+savefig(plt, "sweep_levels.png")
 display(plt)
