@@ -211,14 +211,6 @@ end
 # === Convenience Functions ===
 
 """
-    simulate_brownian_1d_array(; kwargs...)
-
-Convenience function for 1D Brownian motion using array representation.
-"""
-simulate_brownian_1d_array(; kwargs...) = 
-    simulate_brownian_array(Float64, 1; kwargs...)
-
-"""
     simulate_gbm_1d_svector(; kwargs...)
 
 Convenience function for 1D geometric Brownian motion using SVector representation.
