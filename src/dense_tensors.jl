@@ -2,7 +2,7 @@ using StaticArrays
 using LoopVectorization: @avx, @turbo
 
 struct Tensor{T} <: AbstractTensor{T}
-    coeffs::StridedVector{T}
+    coeffs::Vector{T}
     dim::Int
     level::Int
     offsets::Vector{Int}
@@ -249,11 +249,6 @@ Invariant:
 - `s[1] == 0`
 - `s[k+1] - s[k] == dim^k` (length of level-`k` block)
 - `s[level+1] == (dim^(level+1) - dim) ÷ (dim - 1)` (total length)
-
-Example:
-```julia
-julia> level_starts0(2, 3)
-4-element Vector{Int}: [0, 2, 6, 14]   # sizes 2,4,8 → cumulative 0,2,6,14
 """
 function level_starts0(d, m)
     offsets = Vector{Int}(undef, m + 2)
@@ -274,3 +269,62 @@ function level_starts0(d, m)
     return offsets
 end
 
+# In dense_tensors.jl (or a new file that is included after it)
+
+"""
+    log!(out::Tensor{T}, g::Tensor{T}) where T
+
+Compute the truncated tensor logarithm of a group-like element `g` up to `out.level`,
+using the power-series:
+    log(g) = (g-1) - (g-1)^2/2 + (g-1)^3/3 - ...  (truncated at level m)
+All multiplications are done with `mul!`. The result has zero level-0.
+"""
+function log!(out::Tensor{T}, g::Tensor{T}) where {T}
+    @assert out.dim == g.dim && out.level == g.level "log!: shape mismatch"
+    m = out.level
+    m == 0 && (fill!(out.coeffs, zero(T)); return out)
+
+    offsets = out.offsets
+    i0 = offsets[1] + 1
+
+    # Require group-like normalisation at level-0
+    @assert g.coeffs[i0] == one(T) "log!: expected level-0 == 1 (group-like element)"
+
+    # X := g - 1
+    X = similar(out)
+    copy!(X, g)
+    X.coeffs[i0] -= one(T)        # make level-0 of X zero
+
+    # Prepare accumulators/buffers
+    _zero!(out)                   # out ← 0 (and we'll ensure out.level-0 stays 0)
+    P = similar(out)              # current power (starts as X)
+    Q = similar(out)              # scratch for next power
+    copy!(P, X)
+
+    sgn = one(T)                  # (+1, -1, +1, ...)
+    for k in 1:m
+        # out += ((-1)^(k+1) / k) * P
+        _add_scaled!(out, P, sgn / T(k))
+
+        # Next power if needed: P ← P * X
+        if k < m
+            mul!(Q, P, X)
+            Q.coeffs[i0] = zero(T)  # enforce zero level-0 (should already be)
+            P, Q = Q, P             # swap buffers
+        end
+        sgn = -sgn
+    end
+
+    out.coeffs[i0] = zero(T)      # ensure level-0 is 0 for a Lie element
+    return out
+end
+
+"""
+    log(g::Tensor{T}) -> Tensor{T}
+
+Allocating wrapper for `log!`.
+"""
+function log(g::Tensor{T}) where {T}
+    out = similar(g)
+    return log!(out, g)
+end
