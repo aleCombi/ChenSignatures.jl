@@ -1,0 +1,205 @@
+# benchmark.py
+
+import csv
+import math
+import time
+import tracemalloc
+import ast
+from pathlib import Path
+from datetime import datetime
+
+import numpy as np
+import iisignature
+
+
+# -------- simple YAML-ish config loader (limited, but enough) --------
+
+def load_simple_yaml(path: Path) -> dict:
+    """
+    Very small subset YAML parser for our specific config structure.
+    Supports:
+      key: "string"
+      key: bare_string
+      key: [1, 2, 3]
+      key: 123
+    Ignores comments (# ...).
+    """
+    cfg = {}
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if not line or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if not value:
+                continue
+
+            if value.startswith('"') and value.endswith('"'):
+                cfg[key] = value[1:-1]
+            elif value.startswith("["):
+                cfg[key] = ast.literal_eval(value)
+            else:
+                # try int, then fall back to bare string
+                try:
+                    cfg[key] = int(value)
+                except ValueError:
+                    cfg[key] = value
+    return cfg
+
+
+def load_config():
+    script_dir = Path(__file__).resolve().parent
+    config_path = script_dir / "benchmark_config.yaml"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    raw = load_simple_yaml(config_path)
+
+    Ns = raw.get("Ns", [150, 1000, 2000])
+    Ds = raw.get("Ds", [2, 6, 7, 8])
+    Ms = raw.get("Ms", [4, 6])
+    path_kind = raw.get("path_kind", "linear")
+    runs_dir = raw.get("runs_dir", "runs")
+    repeats = int(raw.get("repeats", 5))
+
+    path_kind = path_kind.lower()
+    if path_kind not in ("linear", "sin"):
+        raise ValueError(f"Unknown path_kind '{path_kind}', expected 'linear' or 'sin'.")
+
+    return {
+        "Ns": Ns,
+        "Ds": Ds,
+        "Ms": Ms,
+        "path_kind": path_kind,
+        "runs_dir": runs_dir,
+        "repeats": repeats,
+    }
+
+
+# -------- path generators --------
+
+def make_path_linear(d: int, N: int) -> np.ndarray:
+    ts = np.linspace(0.0, 1.0, N)
+    path = np.empty((N, d), dtype=float)
+    path[:, 0] = ts
+    if d > 1:
+        path[:, 1:] = 2.0 * ts[:, None]
+    return path
+
+
+def make_path_sin(d: int, N: int) -> np.ndarray:
+    ts = np.linspace(0.0, 1.0, N)
+    omega = 2.0 * math.pi
+    ks = np.arange(1, d + 1, dtype=float)
+    path = np.sin(omega * ts[:, None] * ks[None, :])
+    return path
+
+
+def make_path(d: int, N: int, kind: str) -> np.ndarray:
+    if kind == "linear":
+        return make_path_linear(d, N)
+    elif kind == "sin":
+        return make_path_sin(d, N)
+    else:
+        raise ValueError(f"Unknown path_kind: {kind}")
+
+
+# -------- benchmarking helpers --------
+
+def time_and_peak_memory(func, repeats: int = 5):
+    best_time = float("inf")
+    best_peak = 0
+
+    for _ in range(repeats):
+        tracemalloc.start()
+        start = time.perf_counter()
+        func()
+        end = time.perf_counter()
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        dur = end - start
+        if dur < best_time:
+            best_time = dur
+            best_peak = peak
+
+    return best_time, best_peak
+
+
+# -------- one benchmark case --------
+
+def bench_case(d: int, m: int, N: int, path_kind: str, repeats: int):
+    path = make_path(d, N, path_kind)
+
+    # warmup
+    _ = iisignature.sig(path, m)
+
+    def run_sig():
+        iisignature.sig(path, m)
+
+    t_sec, peak_bytes = time_and_peak_memory(run_sig, repeats=repeats)
+    t_ms = t_sec * 1000.0
+    alloc_kib = peak_bytes / 1024.0
+
+    print("—" * 60)
+    print(f"Python: d={d}, m={m}, N={N}, kind={path_kind}")
+    print(f"Python (iisignature): {t_ms:8.3f} ms   peak allocations: {alloc_kib:7.1f} KiB")
+
+    return {
+        "N": N,
+        "d": d,
+        "m": m,
+        "path_kind": path_kind,
+        "t_ms": t_ms,
+        "alloc_KiB": alloc_kib,
+    }
+
+
+# -------- sweep + write grid to file --------
+
+def run_bench():
+    cfg = load_config()
+    Ns = cfg["Ns"]
+    Ds = cfg["Ds"]
+    Ms = cfg["Ms"]
+    path_kind = cfg["path_kind"]
+    runs_dir = cfg["runs_dir"]
+    repeats = cfg["repeats"]
+
+    print("Running Python/iisignature benchmark with config:")
+    print(f"  path_kind = {path_kind}")
+    print(f"  Ns        = {Ns}")
+    print(f"  Ds        = {Ds}")
+    print(f"  Ms        = {Ms}")
+    print(f"  runs_dir  = \"{runs_dir}\"")
+    print(f"  repeats   = {repeats}")
+
+    script_dir = Path(__file__).resolve().parent
+    runs_path = script_dir / runs_dir
+    runs_path.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    for N in Ns:
+        for d in Ds:
+            for m in Ms:
+                results.append(bench_case(d, m, N, path_kind, repeats=repeats))
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = runs_path / f"run_python_{ts}.csv"
+
+    fieldnames = ["N", "d", "m", "path_kind", "t_ms", "alloc_KiB"]
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in results:
+            writer.writerow(row)
+
+    print("=" * 60)
+    print(f"Benchmark grid written to: {csv_path}")
+    return csv_path
+
+
+if __name__ == "__main__":
+    run_bench()

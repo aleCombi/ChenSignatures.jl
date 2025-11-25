@@ -1,0 +1,9 @@
+[project]
+name = "benchmark"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+dependencies = [
+    "iisignature>=0.24",
+    "numpy<2",
+]

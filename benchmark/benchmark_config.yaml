@@ -1,0 +1,19 @@
+# benchmark_config.yaml
+
+# Path type for this run: "linear" or "sin"
+path_kind: "linear"
+
+# Number of time steps
+Ns: [5, 10, 20]
+
+# Dimensions
+Ds: [1, 2, 7]
+
+# Truncation levels
+Ms: [3, 5, 7]
+
+# Folder where benchmark CSVs will be written (relative to this script)
+runs_dir: "runs"
+
+# How many times to repeat each benchmark and take the best time
+repeats: 5
