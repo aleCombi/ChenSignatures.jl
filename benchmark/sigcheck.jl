@@ -2,22 +2,13 @@
 #
 # Usage:
 #   julia --project=. sigcheck.jl N d m path_kind operation
-#
-# Arguments:
-#   operation: "signature" or "logsignature"
-#
-# Output:
-#   Prints the coefficients (in the iisignature-compatible layout)
-#   as a single space-separated line on stdout.
 
 using StaticArrays
 using PathSignatures
 using LinearAlgebra
 
-# We need the Lyndon basis utilities to project the tensor log
-# onto the Lyndon basis for comparison with iisignature.
-# Since these are not exported by PathSignatures, we include the file.
-include(joinpath(@__DIR__, "..", "src", "lyndon_basis.jl"))
+# Note: lyndon_basis.jl is now part of PathSignatures, 
+# so we access build_L and project_to_lyndon via the module.
 
 if length(ARGS) < 5
     error("Usage: julia sigcheck.jl N d m path_kind operation")
@@ -64,9 +55,6 @@ output_vec = Float64[]
 
 if operation === :signature
     # Compare raw signature coefficients (levels 1..m)
-    # iisignature flattens them into a single vector.
-    # Julia's Tensor stores them with padding, so we extract valid regions.
-    
     for k in 1:m
         start_idx = sig.offsets[k+1] + 1
         len = d^k
@@ -78,11 +66,11 @@ elseif operation === :logsignature
     log_sig_tensor = PathSignatures.log(sig)
     
     # 3. Project to Lyndon basis
-    # (iisignature.logsig returns coeffs in the Lyndon basis)
-    lynds, L, _ = build_L(d, m)
+    # Accessing internal functions from PathSignatures
+    lynds, L, _ = PathSignatures.build_L(d, m)
     
     # project_to_lyndon returns the vector of coefficients
-    output_vec = project_to_lyndon(log_sig_tensor, lynds, L)
+    output_vec = PathSignatures.project_to_lyndon(log_sig_tensor, lynds, L)
 
 else
     error("Unknown operation: $operation")
