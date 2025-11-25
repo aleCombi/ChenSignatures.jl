@@ -7,7 +7,7 @@ struct Tensor{T} <: AbstractTensor{T}
     level::Int
     offsets::Vector{Int}
     
-    function Tensor(coeffs::StridedVector{T}, dim::Int, level::Int) where {T}
+    function Tensor(coeffs::Vector{T}, dim::Int, level::Int) where {T}
         offsets = level_starts0(dim, level)
         new{T}(coeffs, dim, level, offsets)
     end
@@ -80,7 +80,7 @@ coeffs(ts::Tensor) = ts.coeffs
     fill!(ts.coeffs, zero(T)); ts
 end
 
-@inline function _add_scaled!(dest::Tensor{T}, src::Tensor{T}, α::T) where {T}
+@inline function add_scaled!(dest::Tensor{T}, src::Tensor{T}, α::T) where {T}
     @inbounds @simd for i in eachindex(dest.coeffs, src.coeffs)
         dest.coeffs[i] = muladd(α, src.coeffs[i], dest.coeffs[i])
     end
@@ -189,7 +189,7 @@ end
 
 
 @inline function _segment_level_offsets!(
-    out::StridedVector{T}, Δ::StridedVector{T}, scale::T,
+    out::Vector{T}, Δ::Vector{T}, scale::T,
     prev_start::Int, prev_len::Int, cur_start::Int
 ) where {T}
     d = length(Δ)
@@ -202,7 +202,7 @@ end
 end
 
 @inline function exp!(
-    out::Tensor{T}, x::StridedVector{T}
+    out::Tensor{T}, x::Vector{T}
 ) where {T}
     @assert length(x) == out.dim "exp!: length(x)=$(length(x)) must equal dim=$(out.dim)"
 
@@ -304,7 +304,7 @@ function log!(out::Tensor{T}, g::Tensor{T}) where {T}
     sgn = one(T)                  # (+1, -1, +1, ...)
     for k in 1:m
         # out += ((-1)^(k+1) / k) * P
-        _add_scaled!(out, P, sgn / T(k))
+        add_scaled!(out, P, sgn / T(k))
 
         # Next power if needed: P ← P * X
         if k < m

@@ -1,2 +1,3 @@
 [deps]
+PathSignatures = "4efb4129-5e83-47d2-926d-947c0e6cb76d"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
