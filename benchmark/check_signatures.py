@@ -49,7 +49,8 @@ def load_config():
     Ms = raw.get("Ms", [3, 5, 7])
     path_kind = raw.get("path_kind", "linear").lower()
     runs_dir = raw.get("runs_dir", "runs")
-    return Ns, Ds, Ms, path_kind, SCRIPT_DIR / runs_dir
+    logsig_method = raw.get("logsig_method", "O")
+    return Ns, Ds, Ms, path_kind, SCRIPT_DIR / runs_dir, logsig_method
 
 # -------- path generators --------
 
@@ -102,7 +103,6 @@ def julia_signature(N: int, d: int, m: int, path_kind: str, operation: str) -> n
         print("Julia stderr:\n", result.stderr, file=sys.stderr)
         raise RuntimeError(f"Julia sigcheck failed with code {result.returncode}")
 
-    # Take the last non-empty line from stdout as the data line
     lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
     if not lines:
         print("Julia stderr:\n", result.stderr, file=sys.stderr)
@@ -119,7 +119,7 @@ def julia_signature(N: int, d: int, m: int, path_kind: str, operation: str) -> n
 # -------- main comparison loop --------
 
 def compare_signatures():
-    Ns, Ds, Ms, path_kind, runs_dir = load_config()
+    Ns, Ds, Ms, path_kind, runs_dir, logsig_method = load_config()
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -139,6 +139,8 @@ def compare_signatures():
 
     operations = ["signature", "logsignature"]
 
+    print(f"Comparing signatures using logsig_method='{logsig_method}' for Python...")
+
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -150,8 +152,11 @@ def compare_signatures():
 
                     for op in operations:
                         if op == "logsignature" and d < 2:
-                            # iisignature doesn't support logsig for d < 2
                             continue
+
+                        # Force clear iisignature cache
+                        if hasattr(iisignature, "_basis_cache"):
+                            iisignature._basis_cache.clear()
 
                         print(f"Comparing {op} for N={N}, d={d}, m={m}, kind={path_kind}...")
 
@@ -159,9 +164,8 @@ def compare_signatures():
                         if op == "signature":
                             sig_py = iisignature.sig(path, m)
                         else:
-                            # iisignature.logsig requires prepared basis
-                            basis = iisignature.prepare(d, m)
-                            sig_py = iisignature.logsig(path, basis)
+                            basis = iisignature.prepare(d, m, logsig_method)
+                            sig_py = iisignature.logsig(path, basis, logsig_method)
                         
                         sig_py = np.asarray(sig_py, dtype=float).ravel()
 

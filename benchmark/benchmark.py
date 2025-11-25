@@ -5,18 +5,16 @@ import math
 import time
 import tracemalloc
 import ast
+import sys
 from pathlib import Path
 from datetime import datetime
 
 import numpy as np
 import iisignature
 
-# -------- simple YAML-ish config loader (limited, but enough) --------
+# -------- simple YAML-ish config loader --------
 
 def load_simple_yaml(path: Path) -> dict:
-    """
-    Very small subset YAML parser for our specific config structure.
-    """
     cfg = {}
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -54,6 +52,7 @@ def load_config():
     path_kind = raw.get("path_kind", "linear")
     runs_dir = raw.get("runs_dir", "runs")
     repeats = int(raw.get("repeats", 5))
+    logsig_method = raw.get("logsig_method", "O")
 
     path_kind = path_kind.lower()
     if path_kind not in ("linear", "sin"):
@@ -66,6 +65,7 @@ def load_config():
         "path_kind": path_kind,
         "runs_dir": runs_dir,
         "repeats": repeats,
+        "logsig_method": logsig_method,
     }
 
 # -------- path generators --------
@@ -116,35 +116,43 @@ def time_and_peak_memory(func, repeats: int = 5):
 
 # -------- one benchmark case --------
 
-def bench_case(d: int, m: int, N: int, path_kind: str, operation: str, repeats: int):
+def bench_case(d: int, m: int, N: int, path_kind: str, operation: str, method: str, repeats: int):
+    # Force clear iisignature cache to prevent 'prepare' conflicts
+    if hasattr(iisignature, "_basis_cache"):
+        iisignature._basis_cache.clear()
+        
     path = make_path(d, N, path_kind)
     
-    # iisignature setup
     if operation == "signature":
-        # iisignature.sig accepts 'm' directly
         arg = m
         func = iisignature.sig
     elif operation == "logsignature":
         if d < 2:
-            # iisignature log signature basis generation requires d >= 2
             return None
-        # iisignature.logsig REQUIRES a prepared basis object
-        arg = iisignature.prepare(d, m)
-        func = iisignature.logsig
+        try:
+            # Prepare explicitly with the requested method
+            arg = iisignature.prepare(d, m, method)
+            func = lambda p, basis: iisignature.logsig(p, basis, method)
+        except Exception as e:
+            print(f"Error preparing iisignature for d={d}, m={m}, method={method}: {e}", file=sys.stderr)
+            raise
     else:
         raise ValueError(f"Unknown operation: {operation}")
 
-    # warmup
-    _ = func(path, arg)
+    try:
+        # warmup
+        _ = func(path, arg)
 
-    def run_op():
-        func(path, arg)
+        def run_op():
+            func(path, arg)
 
-    t_sec, peak_bytes = time_and_peak_memory(run_op, repeats=repeats)
+        t_sec, peak_bytes = time_and_peak_memory(run_op, repeats=repeats)
+    except Exception as e:
+        print(f"Benchmark failed for {operation} d={d} m={m} method={method}: {e}", file=sys.stderr)
+        raise
+
     t_ms = t_sec * 1000.0
     alloc_kib = peak_bytes / 1024.0
-
-    # (Prints removed as requested)
 
     return {
         "N": N,
@@ -166,14 +174,16 @@ def run_bench():
     path_kind = cfg["path_kind"]
     runs_dir = cfg["runs_dir"]
     repeats = cfg["repeats"]
+    logsig_method = cfg["logsig_method"]
 
     print("Running Python/iisignature benchmark with config:")
-    print(f"  path_kind = {path_kind}")
-    print(f"  Ns        = {Ns}")
-    print(f"  Ds        = {Ds}")
-    print(f"  Ms        = {Ms}")
-    print(f"  runs_dir  = \"{runs_dir}\"")
-    print(f"  repeats   = {repeats}")
+    print(f"  path_kind     = {path_kind}")
+    print(f"  Ns            = {Ns}")
+    print(f"  Ds            = {Ds}")
+    print(f"  Ms            = {Ms}")
+    print(f"  runs_dir      = \"{runs_dir}\"")
+    print(f"  repeats       = {repeats}")
+    print(f"  logsig_method = \"{logsig_method}\"")
 
     script_dir = Path(__file__).resolve().parent
     runs_path = script_dir / runs_dir
@@ -186,7 +196,7 @@ def run_bench():
         for d in Ds:
             for m in Ms:
                 for op in operations:
-                    res = bench_case(d, m, N, path_kind, op, repeats=repeats)
+                    res = bench_case(d, m, N, path_kind, op, logsig_method, repeats=repeats)
                     if res is not None:
                         results.append(res)
 

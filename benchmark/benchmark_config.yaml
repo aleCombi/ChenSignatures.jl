@@ -17,3 +17,7 @@ runs_dir: "runs"
 
 # How many times to repeat each benchmark and take the best time
 repeats: 5
+
+# iisignature log-signature algorithm: "O" (default, expansion) or "S" (area/BCH)
+# "O" is typically faster for dense arrays. "S" might be better for specific cases.
+logsig_method: "O"
