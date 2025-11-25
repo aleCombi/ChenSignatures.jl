@@ -1,5 +1,3 @@
-Here is the concise `README.md` for `Chen.jl`, styled after the Hedgehog example.
-
 # Chen
 
 **Chen** is a high-performance Julia library for computing path signatures and log-signatures, foundational tools in Rough Path Theory and modern time-series analysis.
