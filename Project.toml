@@ -5,10 +5,8 @@ authors = ["Alessandro Combi <alecombi94@gmail.com>"]
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-LocalRegistry = "89398ba2-070a-4b16-a995-9893c55d93cf"
 LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
-LocalRegistry = "0.5.7"
 StaticArrays = "1.9.15"
