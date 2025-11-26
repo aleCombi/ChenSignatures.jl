@@ -1,23 +1,8 @@
-# benchmark_config.yaml
-
-# Path type for this run: "linear" or "sin"
 path_kind: "linear"
-
-# Number of time steps
-Ns: [5, 10, 20]
-
-# Dimensions
-Ds: [1, 2, 7]
-
-# Truncation levels
-Ms: [3, 5, 7]
-
-# Folder where benchmark CSVs will be written (relative to this script)
+Ns: [100]
+Ds: [5]
+Ms: [2, 3, 4, 5, 6, 7, 8, 9, 10]
+operations: ["signature"]
 runs_dir: "runs"
-
-# How many times to repeat each benchmark and take the best time
-repeats: 5
-
-# iisignature log-signature algorithm: "O" (default, expansion) or "S" (area/BCH)
-# "O" is typically faster for dense arrays. "S" might be better for specific cases.
+repeats: 20
 logsig_method: "S"

@@ -9,7 +9,21 @@ from datetime import datetime
 import csv
 
 import numpy as np
-import iisignature
+
+# Try importing both libraries
+try:
+    import iisignature
+    HAS_IISIG = True
+except ImportError:
+    HAS_IISIG = False
+    print("Warning: iisignature not available", file=sys.stderr)
+
+try:
+    import sigkernel
+    HAS_PYSIGLIB = True
+except ImportError:
+    HAS_PYSIGLIB = False
+    print("Warning: sigkernel (pysiglib) not available", file=sys.stderr)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "benchmark_config.yaml"
@@ -50,7 +64,8 @@ def load_config():
     path_kind = raw.get("path_kind", "linear").lower()
     runs_dir = raw.get("runs_dir", "runs")
     logsig_method = raw.get("logsig_method", "O")
-    return Ns, Ds, Ms, path_kind, SCRIPT_DIR / runs_dir, logsig_method
+    operations = raw.get("operations", ["signature", "logsignature"])
+    return Ns, Ds, Ms, path_kind, SCRIPT_DIR / runs_dir, logsig_method, operations
 
 # -------- path generators --------
 
@@ -116,10 +131,46 @@ def julia_signature(N: int, d: int, m: int, path_kind: str, operation: str) -> n
 
     return values
 
+# -------- Python signature calculations --------
+
+def iisignature_compute(path: np.ndarray, m: int, operation: str, logsig_method: str) -> np.ndarray:
+    """Compute signature using iisignature"""
+    if not HAS_IISIG:
+        return None
+    
+    d = path.shape[1]
+    
+    # Force clear cache
+    if hasattr(iisignature, "_basis_cache"):
+        iisignature._basis_cache.clear()
+    
+    if operation == "signature":
+        return np.asarray(iisignature.sig(path, m), dtype=float).ravel()
+    else:  # logsignature
+        if d < 2:
+            return None
+        basis = iisignature.prepare(d, m, logsig_method)
+        return np.asarray(iisignature.logsig(path, basis, logsig_method), dtype=float).ravel()
+
+def pysiglib_compute(path: np.ndarray, m: int, operation: str) -> np.ndarray:
+    """Compute signature using pysiglib (signature only - no logsig support)"""
+    if not HAS_PYSIGLIB:
+        return None
+    
+    # pysiglib only supports signature
+    if operation != "signature":
+        return None
+    
+    try:
+        return np.asarray(pysiglib.signature(path, degree=m), dtype=float).ravel()
+    except Exception as e:
+        print(f"pysiglib error for m={m}, op={operation}: {e}", file=sys.stderr)
+        return None
+
 # -------- main comparison loop --------
 
 def compare_signatures():
-    Ns, Ds, Ms, path_kind, runs_dir, logsig_method = load_config()
+    Ns, Ds, Ms, path_kind, runs_dir, logsig_method, operations = load_config()
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -131,15 +182,19 @@ def compare_signatures():
         "m",
         "path_kind",
         "operation",
+        "python_library",
         "len_sig",
         "max_abs_diff",
         "l2_diff",
         "rel_l2_diff",
+        "status",
     ]
 
-    operations = ["signature", "logsignature"]
-
-    print(f"Comparing signatures using logsig_method='{logsig_method}' for Python...")
+    print(f"Comparing signatures...")
+    print(f"  operations:  {operations}")
+    print(f"  iisignature: {'available' if HAS_IISIG else 'NOT AVAILABLE'}")
+    print(f"  pysiglib:    {'available' if HAS_PYSIGLIB else 'NOT AVAILABLE'}")
+    print(f"  iisignature logsig_method='{logsig_method}'")
 
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -154,57 +209,92 @@ def compare_signatures():
                         if op == "logsignature" and d < 2:
                             continue
 
-                        # Force clear iisignature cache
-                        if hasattr(iisignature, "_basis_cache"):
-                            iisignature._basis_cache.clear()
-
                         print(f"Comparing {op} for N={N}, d={d}, m={m}, kind={path_kind}...")
 
-                        # 1. Python calculation
-                        if op == "signature":
-                            sig_py = iisignature.sig(path, m)
-                        else:
-                            basis = iisignature.prepare(d, m, logsig_method)
-                            sig_py = iisignature.logsig(path, basis, logsig_method)
-                        
-                        sig_py = np.asarray(sig_py, dtype=float).ravel()
-
-                        # 2. Julia calculation
+                        # 1. Julia calculation (reference)
                         sig_jl = julia_signature(N, d, m, path_kind, op)
 
-                        # 3. Validation
-                        if sig_jl.shape != sig_py.shape:
-                            print("=== DEBUG SHAPE MISMATCH ===")
-                            print(f"N={N}, d={d}, m={m}, kind={path_kind}, op={op}")
-                            print("Julia sig shape:", sig_jl.shape)
-                            print("Python sig shape:", sig_py.shape)
-                            print("============================")
-                            raise ValueError(
-                                f"Shape mismatch for N={N}, d={d}, m={m}, op={op}: "
-                                f"Julia {sig_jl.shape}, Python {sig_py.shape}"
-                            )
+                        # 2. Compare against iisignature
+                        if HAS_IISIG:
+                            try:
+                                sig_iisig = iisignature_compute(path, m, op, logsig_method)
+                                if sig_iisig is not None:
+                                    if sig_iisig.shape != sig_jl.shape:
+                                        print(f"  iisignature: SHAPE MISMATCH {sig_iisig.shape} vs {sig_jl.shape}")
+                                        status = "shape_mismatch"
+                                        max_abs = float("nan")
+                                        l2 = float("nan")
+                                        rel_l2 = float("nan")
+                                    else:
+                                        diff = sig_jl - sig_iisig
+                                        max_abs = float(np.max(np.abs(diff)))
+                                        l2 = float(np.linalg.norm(diff))
+                                        norm_ref = float(np.linalg.norm(sig_jl))
+                                        rel_l2 = l2 / norm_ref if norm_ref > 0 else float("nan")
+                                        status = "ok"
+                                        print(f"  iisignature: len={len(sig_jl)}, max_abs={max_abs:.3e}, rel_l2={rel_l2:.3e}")
 
-                        diff = sig_jl - sig_py
-                        max_abs = float(np.max(np.abs(diff)))
-                        l2 = float(np.linalg.norm(diff))
-                        norm_ref = float(np.linalg.norm(sig_jl))
-                        rel_l2 = l2 / norm_ref if norm_ref > 0 else float("nan")
+                                    writer.writerow({
+                                        "N": N, "d": d, "m": m,
+                                        "path_kind": path_kind,
+                                        "operation": op,
+                                        "python_library": "iisignature",
+                                        "len_sig": len(sig_jl),
+                                        "max_abs_diff": max_abs,
+                                        "l2_diff": l2,
+                                        "rel_l2_diff": rel_l2,
+                                        "status": status,
+                                    })
+                            except Exception as e:
+                                print(f"  iisignature: ERROR - {e}")
+                                writer.writerow({
+                                    "N": N, "d": d, "m": m,
+                                    "path_kind": path_kind,
+                                    "operation": op,
+                                    "python_library": "iisignature",
+                                    "status": "error",
+                                })
 
-                        print(f"  len={len(sig_jl)}, max_abs={max_abs:.3e}, rel_l2={rel_l2:.3e}")
+                        # 3. Compare against pysiglib
+                        if HAS_PYSIGLIB:
+                            try:
+                                sig_pysig = pysiglib_compute(path, m, op)
+                                if sig_pysig is not None:
+                                    if sig_pysig.shape != sig_jl.shape:
+                                        print(f"  pysiglib: SHAPE MISMATCH {sig_pysig.shape} vs {sig_jl.shape}")
+                                        status = "shape_mismatch"
+                                        max_abs = float("nan")
+                                        l2 = float("nan")
+                                        rel_l2 = float("nan")
+                                    else:
+                                        diff = sig_jl - sig_pysig
+                                        max_abs = float(np.max(np.abs(diff)))
+                                        l2 = float(np.linalg.norm(diff))
+                                        norm_ref = float(np.linalg.norm(sig_jl))
+                                        rel_l2 = l2 / norm_ref if norm_ref > 0 else float("nan")
+                                        status = "ok"
+                                        print(f"  pysiglib:    len={len(sig_jl)}, max_abs={max_abs:.3e}, rel_l2={rel_l2:.3e}")
 
-                        writer.writerow(
-                            {
-                                "N": N,
-                                "d": d,
-                                "m": m,
-                                "path_kind": path_kind,
-                                "operation": op,
-                                "len_sig": len(sig_jl),
-                                "max_abs_diff": max_abs,
-                                "l2_diff": l2,
-                                "rel_l2_diff": rel_l2,
-                            }
-                        )
+                                    writer.writerow({
+                                        "N": N, "d": d, "m": m,
+                                        "path_kind": path_kind,
+                                        "operation": op,
+                                        "python_library": "pysiglib",
+                                        "len_sig": len(sig_jl),
+                                        "max_abs_diff": max_abs,
+                                        "l2_diff": l2,
+                                        "rel_l2_diff": rel_l2,
+                                        "status": status,
+                                    })
+                            except Exception as e:
+                                print(f"  pysiglib: ERROR - {e}")
+                                writer.writerow({
+                                    "N": N, "d": d, "m": m,
+                                    "path_kind": path_kind,
+                                    "operation": op,
+                                    "python_library": "pysiglib",
+                                    "status": "error",
+                                })
 
     print(f"\nSignature comparison CSV written to: {out_csv}")
     return out_csv
