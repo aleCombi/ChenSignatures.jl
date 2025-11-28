@@ -84,7 +84,7 @@ def sig(path, m: int, *, use_enzyme: bool = False) -> np.ndarray:
     arr = np.ascontiguousarray(path, dtype=np.float64)
     
     if use_enzyme:
-        res = jl.ChenSignatures.sig_enzyme(arr, m)
+        res = jl.ChenSignatures.sig_enzyme_horner(arr, m)
     else:
         res = jl.ChenSignatures.sig(arr, m)
     
@@ -108,8 +108,9 @@ def sig_enzyme(path, m: int) -> np.ndarray:
     arr = np.ascontiguousarray(path, dtype=np.float64)
     # Explicitly convert to Julia Matrix to avoid PyArray wrapper issues
     julia_matrix = jl.Matrix(arr)
-    res = jl.ChenSignatures.sig_enzyme(julia_matrix, m)
+    res = jl.ChenSignatures.sig_enzyme_horner(julia_matrix, m)
     return np.asarray(res)
+
 def logsig(path, m: int) -> np.ndarray:
     """
     Compute the log-signature projected onto the Lyndon basis.
