@@ -356,10 +356,7 @@ end
 
 # Add to src/dense_tensors.jl
 
-# Enzyme-friendly version: accepts Vector, D and M from type parameters
-@inline function non_generated_exp!(out::Tensor{T,D,M}, x::AbstractVector{T}) where {T,D,M}
-    # @assert lensgth(x) == D "Input vector must have length D=$D"
-    
+@inline function non_generated_exp!(out::Tensor{T,D,M}, x::SVector{D,T}) where {T,D,M}
     off = level_starts0(D, M)
     coeffs = out.coeffs
     
@@ -392,10 +389,40 @@ end
     return nothing
 end
 
-# Convenience wrapper: still accepts SVector for nice user API
-@inline function non_generated_exp!(out::Tensor{T,D,M}, x::SVector{D,T}) where {T,D,M}
-    # Convert to Vector outside the differentiated region
-    x_vec = Vector{T}(x)
-    non_generated_exp!(out, x_vec)
+# Add to src/dense_tensors.jl
+
+# Enzyme-compatible version: accepts Vector instead of SVector
+@inline function non_generated_exp_vec!(out::Tensor{T,D,M}, x::Vector{T}) where {T,D,M}
+    # @assert length(x) == D "Input vector must have length D=$D"
+    
+    off = level_starts0(D, M)
+    coeffs = out.coeffs
+    
+    # Level 0: constant = 1
+    coeffs[off[1] + 1] = one(T)
+    
+    # Level 1: copy x
+    s1 = off[2] + 1
+    @inbounds for i in 1:D
+        coeffs[s1 + i - 1] = x[i]
+    end
+    
+    # Levels 2..M: recurrence
+    @inbounds for k in 2:M
+        scale = inv(T(k))
+        prev_len = D^(k-1)
+        prev_s = off[k] + 1
+        cur_s = off[k+1] + 1
+        
+        for i in 1:D
+            val = scale * x[i]
+            dest = cur_s + (i - 1) * prev_len
+            
+            for j in 0:(prev_len - 1)
+                coeffs[dest + j] = val * coeffs[prev_s + j]
+            end
+        end
+    end
+    
     return nothing
 end
