@@ -3,13 +3,13 @@
 path_kind: "sin"
 
 # N scaling (row 1): short to quite long paths
-Ns: [200, 1000, 2000, 4000, 10000, 20000, 40000]
+Ns: [200]
 
 # d scaling (row 2): low to moderately high dimension
-Ds: [2, 3, 5, 7, 10]
+Ds: [2]
 
 # m scaling (row 3): increasing algebraic complexity, but still safe in size
-Ms: [2, 3, 4, 5, 6]
+Ms: [2]
 
 operations: ["logsignature", "signature"]
 

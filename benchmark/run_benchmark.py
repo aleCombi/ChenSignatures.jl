@@ -1,8 +1,7 @@
-# run_benchmarks.py
+# run_benchmark.py
 import csv
 import re
 import subprocess
-import ast
 import os
 from pathlib import Path
 from datetime import datetime
@@ -10,43 +9,10 @@ import shutil
 
 import matplotlib.pyplot as plt
 
-# This is the folder where THIS file lives: .../Chen/benchmark
-SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "benchmark_config.yaml"
+# Import shared utilities
+from common import load_config, SCRIPT_DIR, CONFIG_PATH
+
 PYPROJECT = SCRIPT_DIR / "pyproject.toml"
-
-# -------- tiny YAML-ish loader --------
-
-def load_simple_yaml(path: Path) -> dict:
-    cfg = {}
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line or ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            if not value:
-                continue
-
-            if value.startswith('"') and value.endswith('"'):
-                cfg[key] = value[1:-1]
-            elif value.startswith("["):
-                cfg[key] = ast.literal_eval(value)
-            else:
-                try:
-                    cfg[key] = int(value)
-                except ValueError:
-                    cfg[key] = value
-    return cfg
-
-def load_config():
-    if not CONFIG_PATH.is_file():
-        raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
-    raw = load_simple_yaml(CONFIG_PATH)
-    runs_dir = raw.get("runs_dir", "runs")
-    return raw, SCRIPT_DIR / runs_dir
 
 # -------- uv project bootstrap --------
 
@@ -140,8 +106,8 @@ def run_python_benchmark(run_dir: Path, base_env: dict) -> Path:
 
 # -------- comparison logic --------
 
-def read_julia_csv(path: Path):
-    """Read Julia CSV (no library column)"""
+def read_csv_unified(path: Path):
+    """Read CSV with unified schema: N, d, m, path_kind, operation, language, library, method, path_type, t_ms, alloc_KiB"""
     rows_by_key = {}
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -149,65 +115,47 @@ def read_julia_csv(path: Path):
             N = int(row["N"])
             d = int(row["d"])
             m = int(row["m"])
-            path_kind = row.get("path_kind", row.get("kind", "")).strip()
-            operation = row.get("operation", "signature").strip()
+            path_kind = row["path_kind"].strip()
+            operation = row["operation"].strip()
+            language = row["language"].strip()
+            library = row["library"].strip()
+            method = row.get("method", "").strip()
+            path_type = row.get("path_type", "").strip()
             
-            key = (N, d, m, path_kind, operation)
-            rows_by_key[key] = row
-    return rows_by_key
-
-def read_python_csv(path: Path):
-    """Read Python CSV (with library column)"""
-    rows_by_key = {}
-    with path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            N = int(row["N"])
-            d = int(row["d"])
-            m = int(row["m"])
-            path_kind = row.get("path_kind", row.get("kind", "")).strip()
-            operation = row.get("operation", "signature").strip()
-            library = row.get("library", "python").strip()
-            
-            key = (N, d, m, path_kind, operation, library)
+            key = (N, d, m, path_kind, operation, language, library, method, path_type)
             rows_by_key[key] = row
     return rows_by_key
 
 def compare_runs(julia_csv: Path, python_csv: Path, runs_dir: Path) -> Path:
-    julia_rows = read_julia_csv(julia_csv)
-    python_rows = read_python_csv(python_csv)
+    julia_rows = read_csv_unified(julia_csv)
+    python_rows = read_csv_unified(python_csv)
 
-    # Extract unique libraries from Python results
-    libraries = set()
-    for key in python_rows.keys():
-        libraries.add(key[5])  # library is the 6th element
+    # Extract Julia and Python libraries
+    julia_libs = set((k[5], k[6]) for k in julia_rows.keys())  # (language, library)
+    python_libs = set((k[5], k[6]) for k in python_rows.keys())
     
-    print(f"Found Python libraries: {', '.join(sorted(libraries))}")
+    print(f"Found Julia: {', '.join(lib for _, lib in julia_libs)}")
+    print(f"Found Python: {', '.join(lib for _, lib in python_libs)}")
     
-    # Find common benchmark configurations (without library)
-    julia_keys = set((k[0], k[1], k[2], k[3], k[4]) for k in julia_rows.keys())
-    python_keys = set((k[0], k[1], k[2], k[3], k[4]) for k in python_rows.keys())
-    common_keys = sorted(julia_keys & python_keys)
+    # For comparison, we need matching (N, d, m, path_kind, operation)
+    # Then compare across language/library/method/path_type
+    julia_configs = set((k[0], k[1], k[2], k[3], k[4]) for k in julia_rows.keys())
+    python_configs = set((k[0], k[1], k[2], k[3], k[4]) for k in python_rows.keys())
+    common_configs = sorted(julia_configs & python_configs)
     
-    if not common_keys:
-        print("Julia keys sample:", list(julia_keys)[:5])
-        print("Python keys sample:", list(python_keys)[:5])
-        raise RuntimeError("No overlapping benchmark keys between Julia and Python CSVs.")
+    if not common_configs:
+        print("Julia configs sample:", list(julia_configs)[:5])
+        print("Python configs sample:", list(python_configs)[:5])
+        raise RuntimeError("No overlapping benchmark configs between Julia and Python CSVs.")
 
     out_path = runs_dir / "comparison.csv"
 
     fieldnames = [
-        "N",
-        "d",
-        "m",
-        "path_kind",
-        "operation",
-        "python_library",
-        "t_ms_julia",
-        "t_ms_python",
-        "speed_ratio_python_over_julia",
-        "alloc_KiB_julia",
-        "alloc_KiB_python",
+        "N", "d", "m", "path_kind", "operation",
+        "julia_library", "julia_method", "julia_path_type",
+        "python_library", "python_method", "python_path_type",
+        "t_ms_julia", "t_ms_python", "speed_ratio_python_over_julia",
+        "alloc_KiB_julia", "alloc_KiB_python",
     ]
 
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -216,38 +164,44 @@ def compare_runs(julia_csv: Path, python_csv: Path, runs_dir: Path) -> Path:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
-        for (N, d, m, path_kind, operation) in common_keys:
-            jr = julia_rows[(N, d, m, path_kind, operation)]
-            t_jl = float(jr["t_ms"])
-            alloc_jl = float(jr["alloc_KiB"])
-
-            # Compare against each available Python library
-            for lib in libraries:
-                py_key = (N, d, m, path_kind, operation, lib)
-                if py_key not in python_rows:
-                    continue
+        for (N, d, m, path_kind, operation) in common_configs:
+            # Get all Julia variants for this config
+            julia_variants = [(k, v) for k, v in julia_rows.items() 
+                            if k[0:5] == (N, d, m, path_kind, operation) and k[5] == "julia"]
+            
+            # Get all Python variants for this config
+            python_variants = [(k, v) for k, v in python_rows.items() 
+                             if k[0:5] == (N, d, m, path_kind, operation) and k[5] == "python"]
+            
+            # Compare each Julia variant with each Python variant
+            for (jk, jr) in julia_variants:
+                t_jl = float(jr["t_ms"])
+                alloc_jl = float(jr["alloc_KiB"])
+                
+                for (pk, pr) in python_variants:
+                    t_py = float(pr["t_ms"])
+                    alloc_py = float(pr["alloc_KiB"])
                     
-                pr = python_rows[py_key]
-                t_py = float(pr["t_ms"])
-                alloc_py = float(pr["alloc_KiB"])
-
-                speed_ratio = t_py / t_jl if t_jl > 0 else float("nan")
-
-                writer.writerow(
-                    {
+                    speed_ratio = t_py / t_jl if t_jl > 0 else float("nan")
+                    
+                    writer.writerow({
                         "N": N,
                         "d": d,
                         "m": m,
                         "path_kind": path_kind,
                         "operation": operation,
-                        "python_library": lib,
+                        "julia_library": jk[6],
+                        "julia_method": jk[7],
+                        "julia_path_type": jk[8],
+                        "python_library": pk[6],
+                        "python_method": pk[7],
+                        "python_path_type": pk[8],
                         "t_ms_julia": t_jl,
                         "t_ms_python": t_py,
                         "speed_ratio_python_over_julia": speed_ratio,
                         "alloc_KiB_julia": alloc_jl,
                         "alloc_KiB_python": alloc_py,
-                    }
-                )
+                    })
 
     print("===" * 20)
     print(f"Comparison CSV written to: {out_path}")
@@ -256,20 +210,20 @@ def compare_runs(julia_csv: Path, python_csv: Path, runs_dir: Path) -> Path:
     print("\n=== SUMMARY ===")
     with out_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        by_library = {}
+        by_comparison = {}
         for row in reader:
-            lib = row["python_library"]
+            key = f"{row['julia_library']}({row['julia_path_type']}) vs {row['python_library']}"
             ratio = float(row["speed_ratio_python_over_julia"])
-            if lib not in by_library:
-                by_library[lib] = []
-            by_library[lib].append(ratio)
+            if key not in by_comparison:
+                by_comparison[key] = []
+            by_comparison[key].append(ratio)
     
-    for lib in sorted(by_library.keys()):
-        ratios = by_library[lib]
+    for comp in sorted(by_comparison.keys()):
+        ratios = by_comparison[comp]
         avg_ratio = sum(ratios) / len(ratios)
         min_ratio = min(ratios)
         max_ratio = max(ratios)
-        print(f"{lib:>15s}: avg speedup = {avg_ratio:.2f}x, range = [{min_ratio:.2f}x, {max_ratio:.2f}x]")
+        print(f"{comp:>50s}: avg speedup = {avg_ratio:.2f}x, range = [{min_ratio:.2f}x, {max_ratio:.2f}x]")
     
     return out_path
 
@@ -280,42 +234,33 @@ def load_comparison_rows(comparison_csv: Path):
     with comparison_csv.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            rows.append(
-                {
-                    "N": int(row["N"]),
-                    "d": int(row["d"]),
-                    "m": int(row["m"]),
-                    "path_kind": row["path_kind"].strip(),
-                    "operation": row["operation"].strip(),
-                    "python_library": row["python_library"].strip(),
-                    "t_ms_julia": float(row["t_ms_julia"]),
-                    "t_ms_python": float(row["t_ms_python"]),
-                }
-            )
+            rows.append({
+                "N": int(row["N"]),
+                "d": int(row["d"]),
+                "m": int(row["m"]),
+                "path_kind": row["path_kind"].strip(),
+                "operation": row["operation"].strip(),
+                "julia_library": row["julia_library"].strip(),
+                "julia_path_type": row["julia_path_type"].strip(),
+                "python_library": row["python_library"].strip(),
+                "t_ms_julia": float(row["t_ms_julia"]),
+                "t_ms_python": float(row["t_ms_python"]),
+            })
     return rows
 
-def get_julia_time(rows, N, d, m, path_kind, operation):
+def get_julia_time(rows, N, d, m, path_kind, operation, julia_path_type):
     for r in rows:
-        if (
-            r["N"] == N
-            and r["d"] == d
-            and r["m"] == m
-            and r["path_kind"] == path_kind
-            and r["operation"] == operation
-        ):
+        if (r["N"] == N and r["d"] == d and r["m"] == m 
+            and r["path_kind"] == path_kind and r["operation"] == operation
+            and r["julia_path_type"] == julia_path_type):
             return r["t_ms_julia"]
     return None
 
 def get_python_time(rows, lib, N, d, m, path_kind, operation):
     for r in rows:
-        if (
-            r["N"] == N
-            and r["d"] == d
-            and r["m"] == m
-            and r["path_kind"] == path_kind
-            and r["operation"] == operation
-            and r["python_library"] == lib
-        ):
+        if (r["N"] == N and r["d"] == d and r["m"] == m 
+            and r["path_kind"] == path_kind and r["operation"] == operation
+            and r["python_library"] == lib):
             return r["t_ms_python"]
     return None
 
@@ -352,9 +297,15 @@ def make_plots(comparison_csv: Path, runs_dir: Path, cfg: dict):
     path_kind = cfg.get("path_kind", "sin")
     operations = cfg.get("operations", ["signature", "logsignature"])
 
-    libs_python = sorted({r["python_library"] for r in rows})
-    # We'll use these labels in the legend
-    all_lib_labels = ["ChenSignatures.jl"] + libs_python
+    # Get unique Julia path types and Python libraries
+    julia_path_types = sorted({r["julia_path_type"] for r in rows})
+    python_libs = sorted({r["python_library"] for r in rows})
+    
+    # Build labels for legend
+    all_labels = []
+    for pt in julia_path_types:
+        all_labels.append(f"ChenSignatures.jl({pt})")
+    all_labels.extend(python_libs)
 
     fig, axes = plt.subplots(3, 2, figsize=(10, 12), sharey="col")
 
@@ -372,7 +323,7 @@ def make_plots(comparison_csv: Path, runs_dir: Path, cfg: dict):
                 xs = Ns
                 d_fix = d_fixed_for_N
                 m_fix = m_fixed_for_N
-                xlabel = "N (number of paths)"
+                xlabel = "N (number of points)"
             elif vary == "d":
                 xs = Ds
                 d_fix = None
@@ -384,8 +335,8 @@ def make_plots(comparison_csv: Path, runs_dir: Path, cfg: dict):
                 m_fix = None
                 xlabel = "m (signature level)"
 
-            # Build series for each library
-            for lib_label in all_lib_labels:
+            # Plot each Julia path type
+            for pt in julia_path_types:
                 ys = []
                 xs_effective = []
 
@@ -403,18 +354,40 @@ def make_plots(comparison_csv: Path, runs_dir: Path, cfg: dict):
                         d = d_fix
                         m = x
 
-                    # ChenSignatures.jl times come from t_ms_julia once per (N,d,m,op)
-                    if lib_label == "ChenSignatures.jl":
-                        t = get_julia_time(rows, N, d, m, path_kind, op)
-                    else:
-                        t = get_python_time(rows, lib_label, N, d, m, path_kind, op)
-
+                    t = get_julia_time(rows, N, d, m, path_kind, op, pt)
                     if t is not None and t > 0.0:
                         xs_effective.append(x)
                         ys.append(t)
 
                 if len(xs_effective) >= 2:
-                    ax.plot(xs_effective, ys, marker="o", label=lib_label)
+                    ax.plot(xs_effective, ys, marker="o", label=f"ChenSignatures.jl({pt})")
+
+            # Plot each Python library
+            for lib in python_libs:
+                ys = []
+                xs_effective = []
+
+                for x in xs:
+                    if vary == "N":
+                        N = x
+                        d = d_fix
+                        m = m_fix
+                    elif vary == "d":
+                        N = N_fixed_for_d
+                        d = x
+                        m = m_fix
+                    else:  # vary m
+                        N = N_fixed_for_m
+                        d = d_fix
+                        m = x
+
+                    t = get_python_time(rows, lib, N, d, m, path_kind, op)
+                    if t is not None and t > 0.0:
+                        xs_effective.append(x)
+                        ys.append(t)
+
+                if len(xs_effective) >= 2:
+                    ax.plot(xs_effective, ys, marker="o", label=lib)
 
             ax.set_yscale("log")
             ax.set_xlabel(xlabel)
@@ -442,7 +415,8 @@ def make_plots(comparison_csv: Path, runs_dir: Path, cfg: dict):
 # -------- main --------
 
 def main():
-    cfg, runs_root = load_config()
+    cfg = load_config(CONFIG_PATH)
+    runs_root = SCRIPT_DIR / cfg.get("runs_dir", "runs")
     print(f"Using runs root from config: {runs_root}")
 
     # One directory per run
