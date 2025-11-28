@@ -1,5 +1,3 @@
-import ast
-import math
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +5,9 @@ from datetime import datetime
 import csv
 
 import numpy as np
+
+# Import shared utilities
+from common import load_config, make_path, SCRIPT_DIR, CONFIG_PATH
 
 # Try importing both libraries
 try:
@@ -22,84 +23,6 @@ try:
 except ImportError:
     HAS_PYSIGLIB = False
     print("Warning: pysiglib not available", file=sys.stderr)
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "benchmark_config.yaml"
-
-# -------- tiny YAML-ish loader --------
-
-def load_simple_yaml(path: Path) -> dict:
-    cfg = {}
-    if not path.is_file():
-        return cfg
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line or ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            if not value:
-                continue
-
-            if value.startswith('"') and value.endswith('"'):
-                cfg[key] = value[1:-1]
-            elif value.startswith("["):
-                try:
-                    cfg[key] = ast.literal_eval(value)
-                except:
-                    pass # Keep as string if eval fails
-            else:
-                try:
-                    cfg[key] = int(value)
-                except ValueError:
-                    cfg[key] = value
-    return cfg
-
-def load_config():
-    raw = load_simple_yaml(CONFIG_PATH)
-    
-    # Updated defaults for a "Meaningful" check
-    # N=4000 case included to stress test stability
-    Ns = raw.get("Ns", [50, 100, 4000])
-    Ds = raw.get("Ds", [2, 3, 5])
-    Ms = raw.get("Ms", [4, 6, 8])
-    
-    # Default to 'sin' for non-trivial signatures
-    path_kind = raw.get("path_kind", "sin").lower()
-    
-    runs_dir = raw.get("runs_dir", "runs")
-    logsig_method = raw.get("logsig_method", "O")
-    operations = raw.get("operations", ["signature", "logsignature"])
-    return Ns, Ds, Ms, path_kind, SCRIPT_DIR / runs_dir, logsig_method, operations
-
-# -------- path generators --------
-
-def make_path_linear(d: int, N: int) -> np.ndarray:
-    ts = np.linspace(0.0, 1.0, N)
-    path = np.empty((N, d), dtype=float)
-    path[:, 0] = ts
-    if d > 1:
-        path[:, 1:] = 2.0 * ts[:, None]
-    return path
-
-def make_path_sin(d: int, N: int) -> np.ndarray:
-    ts = np.linspace(0.0, 1.0, N)
-    omega = 2.0 * math.pi
-    # Matches Julia: path[i, k] = sin(2pi * t * k)
-    # Python array is 0-indexed, so k=1..d maps to cols 0..d-1
-    ks = np.arange(1, d + 1, dtype=float)
-    path = np.sin(omega * ts[:, None] * ks[None, :])
-    return path
-
-def make_path(d: int, N: int, kind: str) -> np.ndarray:
-    if kind == "linear":
-        return make_path_linear(d, N)
-    elif kind == "sin":
-        return make_path_sin(d, N)
-    else:
-        raise ValueError(f"Unknown path_kind: {kind}")
 
 # -------- call Julia helper --------
 
@@ -196,7 +119,17 @@ def pysiglib_compute(path: np.ndarray, m: int, operation: str) -> np.ndarray:
 # -------- main comparison loop --------
 
 def compare_signatures():
-    Ns, Ds, Ms, path_kind, runs_dir, logsig_method, operations = load_config()
+    cfg = load_config(CONFIG_PATH)
+    
+    # Updated defaults for a "Meaningful" check
+    Ns = cfg.get("Ns", [50, 100, 4000])
+    Ds = cfg.get("Ds", [2, 3, 5])
+    Ms = cfg.get("Ms", [4, 6, 8])
+    path_kind = cfg.get("path_kind", "sin")
+    runs_dir = SCRIPT_DIR / cfg.get("runs_dir", "runs")
+    logsig_method = cfg.get("logsig_method", "O")
+    operations = cfg.get("operations", ["signature", "logsignature"])
+    
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
