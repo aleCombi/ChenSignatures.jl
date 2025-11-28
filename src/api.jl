@@ -12,35 +12,30 @@ function sig(path::AbstractMatrix{T}, m::Int) where T
     return _flatten_tensor(tensor)
 end
 
-# Return flattened tensor (no sum)
-@inline function sig_enzyme(path_matrix::Matrix{Float64}, m::Int)
+function sig_enzyme(path_matrix::Matrix{Float64}, m::Int)
     D = size(path_matrix, 2)
     M = m
     N = size(path_matrix, 1)
-    Δ = Vector{Float64}(undef, D)
     
-    a = ChenSignatures.Tensor{Float64,D,M}()
-    b = ChenSignatures.Tensor{Float64,D,M}()
-    seg = ChenSignatures.Tensor{Float64,D,M}()
+    # Allocate working buffers
+    max_buffer_size = D^(M-1)
+    B1 = Vector{Float64}(undef, max_buffer_size)
+    B2 = Vector{Float64}(undef, max_buffer_size)
     
-    @inbounds for j in 1:D
-        Δ[j] = path_matrix[2, j] - path_matrix[1, j]
-    end
-    ChenSignatures.non_generated_exp_vec!(a, Δ)
+    # Initialize signature tensor
+    a = Tensor{Float64, D, M}()
     
-    @inbounds for i in 2:N-1
-        for j in 1:D
-            Δ[j] = path_matrix[i+1, j] - path_matrix[i, j]
-        end
+    # Process each segment
+    @inbounds for i in 1:N-1
+        # Create SVector for displacement
+        z = SVector{D,Float64}(ntuple(j -> path_matrix[i+1, j] - path_matrix[i, j], D))
         
-        ChenSignatures.non_generated_exp_vec!(seg, Δ)
-        ChenSignatures.non_generated_mul!(b, a, seg)
-        
-        a, b = b, a
+        update_signature_horner_enzyme!(a, z, B1, B2)
     end
     
-    return ChenSignatures._flatten_tensor(a)  # Return vector, not scalar
+    return _flatten_tensor(a)
 end
+
 
 # --- 2. Preparation (prepare) ---
 struct BasisCache{T}
