@@ -24,19 +24,39 @@ jobs:
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       
-  # Optional: Test Python build can extract version
-# .github/workflows/CI.yml
+  # Test Python build can extract version
   test-python-version:
+    name: Python Version Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install dependencies
+      
+      # ✅ Install the package (brings all dependencies)
+      - name: Install package
+        run: pip install -e python/
+      
+      - name: Verify version
+        run: python -c "import chen; print(f'chen v{chen.__version__}')"
+      
+      - name: Verify version matches Project.toml
         run: |
-          pip install numpy
-      - name: Verify version extraction
-        run: |
-          cd python
-          python -c "from chen._version import __version__; print(f'Extracted version: {__version__}')"
+          python << 'EOF'
+          import re
+          from pathlib import Path
+          import chen
+          
+          # Read Julia version
+          project_toml = Path('Project.toml')
+          content = project_toml.read_text()
+          match = re.search(r'version = "([^"]+)"', content)
+          julia_version = match.group(1)
+          
+          # Compare
+          assert chen.__version__ == julia_version, \
+              f"Version mismatch: Python={chen.__version__}, Julia={julia_version}"
+          
+          print(f"✓ Versions match: {julia_version}")
+          EOF
