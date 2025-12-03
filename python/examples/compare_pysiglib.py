@@ -196,8 +196,9 @@ def main():
         print("Install with: pip install pysiglib")
         return
 
-    # Test cases from the reference paper
+    # Test cases from the reference paper + edge cases
     test_cases = [
+        (1, 256, 4, 6),      # Edge case: batch size 1
         (128, 256, 4, 6),    # Small case
         (128, 512, 8, 5),    # Medium case
         (128, 1024, 16, 4),  # Large case
