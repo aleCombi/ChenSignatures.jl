@@ -4,7 +4,8 @@
 
 It provides state-of-the-art speed, sparse algebra support, and a clean API for both research and production use.
 
-[![Build Status](https://github.com/aleCombi/ChenSignatures.jl/actions/workflows/CI.yml/badge.svg?branch=master)](https://github.com/aleCombi/ChenSignatures.jl/actions/workflows/CI.yml?query=branch%3Amaster)  
+[![Build Status](https://github.com/aleCombi/ChenSignatures.jl/actions/workflows/CI.yml/badge.svg?branch=master)](https://github.com/aleCombi/ChenSignatures.jl/actions/workflows/CI.yml?query=branch%3Amaster)
+[![Documentation](https://img.shields.io/badge/docs-stable-blue.svg)](https://aleCombi.github.io/ChenSignatures.jl)
 [![PyPI](https://img.shields.io/pypi/v/chen-signatures)](https://pypi.org/project/chen-signatures/)
 
 ---
@@ -121,6 +122,14 @@ sig_result = sig(path, 4)
 basis = prepare(5, 4)  # dimension=5, level=4
 logsig_result = logsig(path, basis)
 ```
+
+---
+
+## 📖 Documentation
+
+For detailed API documentation, mathematical background, and usage examples, see:
+
+👉 **[ChenSignatures.jl Documentation](https://aleCombi.github.io/ChenSignatures.jl)**
 
 ---
 
