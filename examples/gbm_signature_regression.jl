@@ -6,12 +6,19 @@
 # 3. Regressing against call option payoff (S_T - K)^+
 # 4. Visualization of regression results
 
+# Disable plot display windows - only save to file (must be set before loading Plots)
+ENV["GKSwstype"] = "nul"  # Non-interactive GR backend for Windows
+
+using Revise
 using ChenSignatures
 using GLM
+using GLMNet
 using Plots
 using Random
 using Statistics
 using LinearAlgebra
+
+gr()  # Use GR backend
 
 # ============================================================================
 # Geometric Brownian Motion Simulation
@@ -93,16 +100,38 @@ end
 # Regression
 # ============================================================================
 
-# Fit linear regression: signatures → payoffs
-function fit_signature_regression(signatures::Matrix{Float64}, targets::Vector{Float64})
-    X = signatures'  # GLM expects (num_samples, num_features)
-    return lm(X, targets)
+# Fit regression model: signatures → payoffs
+# Supports OLS, Ridge (alpha=0), Lasso (alpha=1), and Elastic Net (0 < alpha < 1)
+function fit_signature_regression(signatures::Matrix{Float64}, targets::Vector{Float64};
+                                  regression_type::Symbol=:ols)
+    X = signatures'  # Convert to (num_samples, num_features)
+
+    if regression_type == :ols
+        # Ordinary Least Squares via GLM
+        return lm(X, targets)
+    elseif regression_type in [:ridge, :lasso, :elastic_net]
+        # Ridge (alpha=0), Lasso (alpha=1), or Elastic Net via GLMNet
+        # Use cross-validation to select optimal lambda
+        alpha = regression_type == :ridge ? 0.0 : (regression_type == :lasso ? 1.0 : 0.5)
+        cv_result = glmnetcv(X, targets, alpha=alpha)
+        return (model=cv_result, type=regression_type, lambda=cv_result.lambda[argmin(cv_result.meanloss)])
+    else
+        error("Unknown regression_type: $regression_type. Use :ols, :ridge, :lasso, or :elastic_net")
+    end
 end
 
 # Predict using fitted model
 function predict_regression(model, signatures::Matrix{Float64})
     X = signatures'
-    return predict(model, X)
+
+    if model isa GLM.LinearModel || model isa StatsModels.TableRegressionModel
+        # OLS from GLM
+        return GLM.predict(model, X)
+    else  # GLMNet model (named tuple with model field)
+        # Use lambda with minimum CV error
+        best_idx = argmin(model.model.meanloss)
+        return vec(GLMNet.predict(model.model.path, X, best_idx))
+    end
 end
 
 # Compute R² score
@@ -120,7 +149,8 @@ end
 function plot_regression_results(S_T::Vector{Float64},
                                 payoffs_true::Vector{Float64},
                                 payoffs_pred::Vector{Float64},
-                                K::Real)
+                                K::Real,
+                                sig_level::Int)
     # Sort by terminal price for cleaner visualization
     perm = sortperm(S_T)
     S_T_sorted = S_T[perm]
@@ -130,17 +160,17 @@ function plot_regression_results(S_T::Vector{Float64},
     # Create plot
     plt = scatter(S_T_sorted, true_sorted,
                   label="True Payoff",
-                  alpha=0.6,
+                  alpha=0.5,
                   xlabel="Terminal Stock Price (S_T)",
                   ylabel="Payoff",
                   title="Signature Regression: Predicted vs True Payoffs",
                   legend=:topleft,
-                  markersize=4)
+                  markersize=2)
 
     scatter!(plt, S_T_sorted, pred_sorted,
-             label="Predicted Payoff",
-             alpha=0.6,
-             markersize=4)
+             label="Predicted (sig level=$sig_level)",
+             alpha=0.5,
+             markersize=2)
 
     # Add strike price line
     vline!(plt, [K],
@@ -163,16 +193,31 @@ function run_gbm_signature_regression_example(;
     T=1.0,
     K=100.0,
     N=50,
-    train_paths=1000,
+    train_paths=400000,
     test_paths=200,
     plot_paths=500,  # Additional paths for plotting
-    sig_level=4,
-    seed=42
+    sig_level=7,
+    seed=42,
+    samples_per_feature=20,  # Rule of thumb: 10-20 samples per feature
+    regression_type::Symbol=:ols  # :ols, :ridge, :lasso, :elastic_net
 )
     println("=" ^ 70)
     println("Geometric Brownian Motion Signature Regression")
     println("=" ^ 70)
     println()
+
+    # Calculate signature dimension: d + d² + ... + d^m for d=2 (time-augmented)
+    sig_dim = sum(2^k for k in 1:sig_level)
+    min_samples = sig_dim * samples_per_feature
+
+    # Adjust training samples if needed to avoid overfitting
+    if train_paths < min_samples
+        train_paths = min_samples
+        println("⚠ Signature dimension ($sig_dim) requires at least $min_samples samples")
+        println("  (using $samples_per_feature samples per feature rule)")
+        println("  Automatically increasing train_paths to $train_paths")
+        println()
+    end
 
     rng = MersenneTwister(seed)
 
@@ -190,16 +235,22 @@ function run_gbm_signature_regression_example(;
     println("2. Time-augmenting paths and computing signatures (level $sig_level)...")
     train_paths_augmented = time_augment_paths(train_paths_data, T)
     train_signatures = compute_signatures_batch(train_paths_augmented, sig_level)
-    sig_dim = size(train_signatures, 1)
     println("   Signature dimension: $sig_dim")
+    println("   Samples/feature ratio: $(round(train_paths/sig_dim, digits=1))")
     println()
 
     # ========================================================================
     # 3. Compute payoffs and fit regression
     # ========================================================================
-    println("3. Fitting regression model (signatures → payoffs)...")
+    println("3. Fitting $regression_type regression model (signatures → payoffs)...")
     train_payoffs = compute_payoffs(train_paths_data, K)
-    model = fit_signature_regression(train_signatures, train_payoffs)
+    model = fit_signature_regression(train_signatures, train_payoffs; regression_type=regression_type)
+
+    # Print lambda if using regularized regression
+    if regression_type != :ols
+        println("   Selected λ: $(round(model.lambda, sigdigits=3)) (via CV)")
+    end
+
     train_predictions = predict_regression(model, train_signatures)
     train_r2 = compute_r_squared(train_payoffs, train_predictions)
     println("   Training R²: $(round(train_r2, digits=4))")
@@ -230,8 +281,7 @@ function run_gbm_signature_regression_example(;
     plot_predictions = predict_regression(model, plot_signatures)
     plot_S_T = extract_terminal_values(plot_paths_data)
 
-    plt = plot_regression_results(plot_S_T, plot_payoffs, plot_predictions, K)
-    display(plt)
+    plt = plot_regression_results(plot_S_T, plot_payoffs, plot_predictions, K, sig_level)
     savefig(plt, "gbm_signature_regression.png")
     println("   Plot saved as 'gbm_signature_regression.png'")
     println()
@@ -247,6 +297,7 @@ function run_gbm_signature_regression_example(;
     println("Paths: $train_paths training, $test_paths test, $plot_paths plot")
     println("Time augmentation: 1D → 2D (time, price)")
     println("Signature level: $sig_level (dimension: $sig_dim)")
+    println("Regression: $regression_type" * (regression_type != :ols ? " (λ=$(round(model.lambda, sigdigits=3)))" : ""))
     println()
     println("Results:")
     println("  Training R²: $(round(train_r2, digits=4))")
@@ -260,6 +311,19 @@ end
 # Run the example
 # ============================================================================
 
-if abspath(PROGRAM_FILE) == @__FILE__
-    run_gbm_signature_regression_example()
-end
+# Run automatically when script is executed or included
+run_gbm_signature_regression_example(
+    S₀=100.0,
+    μ=0.05,
+    σ=0.2,
+    T=1.0,
+    K=100.0,
+    N=50,
+    train_paths=100000,
+    test_paths=200,
+    plot_paths=500,
+    sig_level=10,
+    seed=42,
+    samples_per_feature=20,
+    regression_type=:ridge
+)
