@@ -1,7 +1,7 @@
 using LinearAlgebra
 using StaticArrays
 
-export sig, prepare, logsig, signature_path, SignatureWorkspace, BasisCache, rolling_sig
+export sig, prepare, logsig, signature_path, SignatureWorkspace, BasisCache
 
 # ============================================================================
 # Workspace Preallocation
@@ -615,49 +615,7 @@ forecast_features = rolling_sig(path[1:t, :], 4, 20)
 
 See also: [`sig`](@ref), [`SignatureWorkspace`](@ref)
 """
-function rolling_sig(
-    path::AbstractMatrix{T},
-    m::Int,
-    window_size::Int;
-    stride::Int = 1
-) where T
-    N, D = size(path)
-
-    # Input validation
-    N >= 2 || throw(ArgumentError("Path must have at least 2 points, got N=$N"))
-    D >= 1 || throw(ArgumentError("Path dimension must be at least 1, got D=$D"))
-    m >= 1 || throw(ArgumentError("Signature level must be at least 1, got m=$m"))
-    window_size >= 2 || throw(ArgumentError("Window size must be at least 2, got window_size=$window_size"))
-    window_size <= N || throw(ArgumentError("Window size ($window_size) cannot exceed path length ($N)"))
-    stride >= 1 || throw(ArgumentError("Stride must be at least 1, got stride=$stride"))
-
-    # Compute output dimensions
-    num_windows = div(N - window_size, stride) + 1
-    sig_len = sum(D^k for k in 1:m)
-
-    # Preallocate output and workspace
-    result = Matrix{T}(undef, sig_len, num_windows)
-    out_tensor = Tensor{T, D, m}()
-    ws = SignatureWorkspace{T, D, m}()
-
-    # Sliding window computation
-    for i in 1:num_windows
-        # Compute window indices
-        start_idx = 1 + (i - 1) * stride
-        end_idx = start_idx + window_size - 1
-
-        # Extract window using view (no copy)
-        window = @view path[start_idx:end_idx, :]
-
-        # Compute signature in-place
-        signature_path!(out_tensor, window, ws)
-
-        # Flatten and store
-        result[:, i] = _flatten_tensor(out_tensor)
-    end
-
-    return result
-end
+# rolling_sig removed in this branch
 
 # ============================================================================
 # Internal Helper Functions

@@ -28,7 +28,7 @@ include("gpu_kernels.jl")
 export sig          # Compute truncated path signature (returns flattened vector)
 export logsig       # Compute log-signature projected onto Lyndon basis
 export prepare      # Precompute Lyndon basis for log-signature computations
-export rolling_sig  # Compute signatures over rolling windows of a time series path
+# rolling_sig intentionally not exported on this branch
 #
 # Core types and lower-level API:
 export Tensor              # Dense tensor algebra representation
@@ -38,9 +38,3 @@ export BasisCache          # Cached Lyndon basis data for logsig
 #
 # GPU acceleration (requires KernelAbstractions.jl + GPU backend):
 export sig_batch_gpu       # GPU-accelerated batch signature computation
-
-# Note: SparseTensor, Word, shuffle_product, lyndon_words, build_L, and
-# project_to_lyndon are internal implementation details and not exported.
-# Advanced users can access them via ChenSignatures.SparseTensor, etc.
-
-end
