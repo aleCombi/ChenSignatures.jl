@@ -1,5 +1,6 @@
 # Comprehensive GPU vs CPU Benchmark
 # Tests various configurations and produces formatted tables
+# Configure B/D/M/N via `benchmark_comprehensive_config.toml` (or set BENCH_CONFIG to a custom path).
 
 using CUDA
 using ChenSignatures
@@ -8,6 +9,7 @@ using Printf
 using Dates
 using BenchmarkTools
 using Statistics
+using TOML
 const BENCH_SECONDS = 1.0   # target time budget per benchmarked expression (longer for stability)
 const BENCH_SAMPLES = 50    # independent samples to aggregate (use median to avoid outliers)
 const BENCH_WARMUP  = 1     # discard this many initial samples when computing the median
@@ -15,9 +17,123 @@ const BENCH_EVALS   = 1     # evaluations per sample (keep 1 to avoid extra GPU/
 const RECOMMENDED_THREADS = max(Threads.nthreads(), Sys.CPU_THREADS)
 const MULTITHREAD_ENABLED = Threads.nthreads() > 1
 const TARGET_THREADS = get(ENV, "BENCH_THREADS", "")
+const DEFAULT_CONFIG_PATH = joinpath(@__DIR__, "benchmark_comprehensive_config.toml")
+
+struct BenchConfig
+    sections::Vector{Symbol}
+    batch_sizes::Vector{Int}
+    batch_dim::Int
+    batch_level::Int
+    batch_length::Int
+    dimensions::Vector{Int}
+    dimension_batch::Int
+    dimension_level::Int
+    dimension_length::Int
+    levels::Vector{Int}
+    level_batch::Int
+    level_dim::Int
+    level_length::Int
+    path_lengths::Vector{Int}
+    length_batch::Int
+    length_dim::Int
+    length_level::Int
+    single_runs::Vector{NamedTuple}
+end
 
 # Reuse identical data across sections to avoid variance from different random draws
 const _PATH_CACHE = Dict{NTuple{4,Int},NamedTuple{(:paths_cpu, :paths_gpu)}}()
+
+# ============================================================================
+# Config loading helpers
+# ============================================================================
+
+function parse_int_vec(val, default)
+    isa(val, AbstractVector) || return default
+    try
+        return [Int(x) for x in val]
+    catch
+        return default
+    end
+end
+
+function parse_int(val, default)
+    try
+        return Int(val)
+    catch
+        return default
+    end
+end
+
+function parse_sections(val)
+    if isa(val, AbstractVector)
+        syms = Symbol.(val)
+        allowed = [:batch, :dimension, :level, :length, :single]
+        return [s for s in syms if s in allowed]
+    end
+    return [:batch, :dimension, :level, :length, :single]
+end
+
+function parse_single_runs(val)
+    runs = NamedTuple[]
+    if isa(val, AbstractVector)
+        for entry in val
+            if isa(entry, AbstractDict)
+                ok_keys = all(k -> haskey(entry, k), ["B", "D", "M", "N"])
+                name = get(entry, "name", "custom")
+                if ok_keys
+                    push!(runs, (name = String(name),
+                                 B = Int(entry["B"]),
+                                 D = Int(entry["D"]),
+                                 M = Int(entry["M"]),
+                                 N = Int(entry["N"])))
+                end
+            end
+        end
+    end
+    return runs
+end
+
+function load_config()
+    cfg_path = get(ENV, "BENCH_CONFIG", DEFAULT_CONFIG_PATH)
+    if isfile(cfg_path)
+        parsed = TOML.parsefile(cfg_path)
+        println("Loaded benchmark config: $cfg_path")
+    else
+        parsed = Dict{String,Any}()
+        println("Using built-in defaults (config not found at $cfg_path)")
+    end
+
+    sections          = parse_sections(get(parsed, "sections", nothing))
+
+    batch_sizes       = parse_int_vec(get(parsed, "batch_sizes", nothing),
+                                      [100, 500, 1_000, 2_000, 5_000, 10_000, 20_000])
+    batch_dim         = parse_int(get(parsed, "batch_dim", nothing), 2)
+    batch_level       = parse_int(get(parsed, "batch_level", nothing), 4)
+    batch_length      = parse_int(get(parsed, "batch_length", nothing), 50)
+
+    dimensions        = parse_int_vec(get(parsed, "dimensions", nothing), [2, 3, 4, 5])
+    dimension_batch   = parse_int(get(parsed, "dimension_batch", nothing), 5_000)
+    dimension_level   = parse_int(get(parsed, "dimension_level", nothing), 4)
+    dimension_length  = parse_int(get(parsed, "dimension_length", nothing), 50)
+
+    levels            = parse_int_vec(get(parsed, "levels", nothing), [2, 3, 4, 5])
+    level_batch       = parse_int(get(parsed, "level_batch", nothing), 5_000)
+    level_dim         = parse_int(get(parsed, "level_dim", nothing), 2)
+    level_length      = parse_int(get(parsed, "level_length", nothing), 50)
+
+    path_lengths      = parse_int_vec(get(parsed, "path_lengths", nothing), [10, 25, 50, 100, 200])
+    length_batch      = parse_int(get(parsed, "length_batch", nothing), 5_000)
+    length_dim        = parse_int(get(parsed, "length_dim", nothing), 2)
+    length_level      = parse_int(get(parsed, "length_level", nothing), 4)
+
+    single_runs       = parse_single_runs(get(parsed, "single_runs", nothing))
+
+    return BenchConfig(sections, batch_sizes, batch_dim, batch_level, batch_length,
+                       dimensions, dimension_batch, dimension_level, dimension_length,
+                       levels, level_batch, level_dim, level_length,
+                       path_lengths, length_batch, length_dim, length_level,
+                       single_runs)
+end
 
 # ============================================================================#
 # Optional self-reexec with a requested thread count (set BENCH_THREADS=N)
@@ -147,6 +263,7 @@ if !CUDA.functional()
 end
 
 Random.seed!(42)
+cfg = load_config()
 
 print_header("GPU Performance Benchmark - ChenSignatures.jl")
 
@@ -160,72 +277,88 @@ end
 println()
 
 # ============================================================================
-# Benchmark 1: Varying Batch Size (Fixed D=2, M=4, N=50)
+# Benchmark 1: Varying Batch Size (Fixed D, M, N)
 # ============================================================================
-
-print_header("Benchmark 1: Batch Size Scaling (D=2, M=4, N=50)")
-print_table_header()
-
-D, M, N = 2, 4, 50
-batch_sizes = [100, 500, 1_000, 2_000, 5_000, 10_000, 20_000]
 
 results_batch = []
-for B in batch_sizes
-    res = run_benchmark(D, M, N, B)
-    push!(results_batch, (B=B, D=D, M=M, N=N, res...))
-    @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput
+if :batch in cfg.sections
+    print_header("Benchmark 1: Batch Size Scaling (D=$(cfg.batch_dim), M=$(cfg.batch_level), N=$(cfg.batch_length))")
+    print_table_header()
+
+    D, M, N = cfg.batch_dim, cfg.batch_level, cfg.batch_length
+    for B in cfg.batch_sizes
+        res = run_benchmark(D, M, N, B)
+        push!(results_batch, (B=B, D=D, M=M, N=N, res...))
+        @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput
+    end
 end
 
 # ============================================================================
-# Benchmark 2: Varying Dimension (Fixed B=5000, M=4, N=50)
+# Benchmark 2: Varying Dimension (Fixed B, M, N)
 # ============================================================================
-
-print_header("Benchmark 2: Dimension Scaling (B=5000, M=4, N=50)")
-print_table_header()
-
-B, M, N = 5_000, 4, 50
-dimensions = [2, 3, 4, 5]
 
 results_dim = []
-for D in dimensions
-    res = run_benchmark(D, M, N, B)
-    push!(results_dim, (B=B, D=D, M=M, N=N, res...))
-    @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput
+if :dimension in cfg.sections
+    print_header("Benchmark 2: Dimension Scaling (B=$(cfg.dimension_batch), M=$(cfg.dimension_level), N=$(cfg.dimension_length))")
+    print_table_header()
+
+    B, M, N = cfg.dimension_batch, cfg.dimension_level, cfg.dimension_length
+    for D in cfg.dimensions
+        res = run_benchmark(D, M, N, B)
+        push!(results_dim, (B=B, D=D, M=M, N=N, res...))
+        @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput
+    end
 end
 
 # ============================================================================
-# Benchmark 3: Varying Signature Level (Fixed B=5000, D=2, N=50)
+# Benchmark 3: Varying Signature Level (Fixed B, D, N)
 # ============================================================================
-
-print_header("Benchmark 3: Signature Level Scaling (B=5000, D=2, N=50)")
-print_table_header()
-
-B, D, N = 5_000, 2, 50
-levels = [2, 3, 4, 5]
 
 results_level = []
-for M in levels
-    res = run_benchmark(D, M, N, B)
-    push!(results_level, (B=B, D=D, M=M, N=N, res...))
-    sig_len = sum(D^k for k in 1:M)
-    @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput
+if :level in cfg.sections
+    print_header("Benchmark 3: Signature Level Scaling (B=$(cfg.level_batch), D=$(cfg.level_dim), N=$(cfg.level_length))")
+    print_table_header()
+
+    B, D, N = cfg.level_batch, cfg.level_dim, cfg.level_length
+    for M in cfg.levels
+        res = run_benchmark(D, M, N, B)
+        push!(results_level, (B=B, D=D, M=M, N=N, res...))
+        sig_len = sum(D^k for k in 1:M)
+        @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput
+    end
 end
 
 # ============================================================================
-# Benchmark 4: Varying Path Length (Fixed B=5000, D=2, M=4)
+# Benchmark 4: Varying Path Length (Fixed B, D, M)
 # ============================================================================
 
-print_header("Benchmark 4: Path Length Scaling (B=5000, D=2, M=4)")
-print_table_header()
-
-B, D, M = 5_000, 2, 4
-path_lengths = [10, 25, 50, 100, 200]
-
 results_length = []
-for N in path_lengths
-    res = run_benchmark(D, M, N, B)
-    push!(results_length, (B=B, D=D, M=M, N=N, res...))
-    @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput
+if :length in cfg.sections
+    print_header("Benchmark 4: Path Length Scaling (B=$(cfg.length_batch), D=$(cfg.length_dim), M=$(cfg.length_level))")
+    print_table_header()
+
+    B, D, M = cfg.length_batch, cfg.length_dim, cfg.length_level
+    for N in cfg.path_lengths
+        res = run_benchmark(D, M, N, B)
+        push!(results_length, (B=B, D=D, M=M, N=N, res...))
+        @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput
+    end
+end
+
+# ============================================================================
+# Benchmark 5: Custom Single Runs (explicit tuples)
+# ============================================================================
+
+results_single = []
+if :single in cfg.sections && !isempty(cfg.single_runs)
+    print_header("Benchmark 5: Custom Single Runs")
+    print_table_header()
+    for run in cfg.single_runs
+        B, D, M, N = run.B, run.D, run.M, run.N
+        res = run_benchmark(D, M, N, B)
+        push!(results_single, (B=B, D=D, M=M, N=N, res..., name=run.name))
+        @printf "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %8.0f  (%s)\n" B D M N (res.cpu_single_time*1000) (res.cpu_threaded_time*1000) (res.gpu_time*1000) res.speedup_single res.speedup_threaded res.throughput run.name
+    end
 end
 
 # ============================================================================
@@ -234,7 +367,12 @@ end
 
 print_header("Performance Summary")
 
-all_results = vcat(results_batch, results_dim, results_level, results_length)
+all_results = vcat(results_batch, results_dim, results_level, results_length, results_single)
+
+if isempty(all_results)
+    println("No benchmarks executed (check config sections in $(DEFAULT_CONFIG_PATH) or BENCH_CONFIG).")
+    exit(0)
+end
 
 avg_speedup_single = sum(r.speedup_single for r in all_results) / length(all_results)
 avg_speedup_threaded = sum(r.speedup_threaded for r in all_results) / length(all_results)
@@ -280,52 +418,74 @@ open(output_file, "w") do io
     println(io)
 
     # Batch Size Scaling
-    println(io, "="^100)
-    println(io, "Benchmark 1: Batch Size Scaling (D=2, M=4, N=50)")
-    println(io, "="^100)
-    println(io)
-    @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s"
-    println(io, "-"^100)
-    for r in results_batch
-        @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput
+    if !isempty(results_batch)
+        println(io, "="^100)
+        println(io, "Benchmark 1: Batch Size Scaling (D=$(cfg.batch_dim), M=$(cfg.batch_level), N=$(cfg.batch_length))")
+        println(io, "="^100)
+        println(io)
+        @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s"
+        println(io, "-"^100)
+        for r in results_batch
+            @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput
+        end
+        println(io)
     end
-    println(io)
 
     # Dimension Scaling
-    println(io, "="^100)
-    println(io, "Benchmark 2: Dimension Scaling (B=5000, M=4, N=50)")
-    println(io, "="^100)
-    println(io)
-    @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s"
-    println(io, "-"^100)
-    for r in results_dim
-        @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput
+    if !isempty(results_dim)
+        println(io, "="^100)
+        println(io, "Benchmark 2: Dimension Scaling (B=$(cfg.dimension_batch), M=$(cfg.dimension_level), N=$(cfg.dimension_length))")
+        println(io, "="^100)
+        println(io)
+        @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s"
+        println(io, "-"^100)
+        for r in results_dim
+            @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput
+        end
+        println(io)
     end
-    println(io)
 
     # Level Scaling
-    println(io, "="^100)
-    println(io, "Benchmark 3: Signature Level Scaling (B=5000, D=2, N=50)")
-    println(io, "="^100)
-    println(io)
-    @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s"
-    println(io, "-"^100)
-    for r in results_level
-        @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput
+    if !isempty(results_level)
+        println(io, "="^100)
+        println(io, "Benchmark 3: Signature Level Scaling (B=$(cfg.level_batch), D=$(cfg.level_dim), N=$(cfg.level_length))")
+        println(io, "="^100)
+        println(io)
+        @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s"
+        println(io, "-"^100)
+        for r in results_level
+            @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput
+        end
+        println(io)
     end
-    println(io)
 
     # Path Length Scaling
-    println(io, "="^100)
-    println(io, "Benchmark 4: Path Length Scaling (B=5000, D=2, M=4)")
-    println(io, "="^100)
-    println(io)
-    @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s"
-    println(io, "-"^100)
-    for r in results_length
-        @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput
+    if !isempty(results_length)
+        println(io, "="^100)
+        println(io, "Benchmark 4: Path Length Scaling (B=$(cfg.length_batch), D=$(cfg.length_dim), M=$(cfg.length_level))")
+        println(io, "="^100)
+        println(io)
+        @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s"
+        println(io, "-"^100)
+        for r in results_length
+            @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput
+        end
+        println(io)
     end
-    println(io)
+
+    # Custom Single Runs
+    if !isempty(results_single)
+        println(io, "="^100)
+        println(io, "Benchmark 5: Custom Single Runs")
+        println(io, "="^100)
+        println(io)
+        @printf io "%-8s %-6s %-6s %-6s | %-10s %-10s %-10s | %-8s %-8s %-10s %-12s\n" "Batch" "Dim" "Level" "Length" "CPU-1T(ms)" "CPU-MT(ms)" "GPU (ms)" "Speed-1T" "Speed-MT" "GPU-path/s" "Name"
+        println(io, "-"^110)
+        for r in results_single
+            @printf io "%-8d %-6d %-6d %-6d | %10.2f %10.2f %10.2f | %8.2fx %8.2fx %10.0f %-12s\n" r.B r.D r.M r.N (r.cpu_single_time*1000) (r.cpu_threaded_time*1000) (r.gpu_time*1000) r.speedup_single r.speedup_threaded r.throughput r.name
+        end
+        println(io)
+    end
 
     # Summary
     println(io, "="^100)
