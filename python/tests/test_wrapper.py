@@ -187,7 +187,7 @@ def test_time_augment_and_lead_lag():
     expected_ll = np.array([[0, 0], [0, 1], [1, 1], [1, 2], [2, 2]], dtype=ll.dtype)
     np.testing.assert_allclose(ll, expected_ll)
 
-    sig_time = chen.sig_time(path, 2)
+    sig_time = chen.sig_time(path, 2, Tspan=2.0)
     sig_manual = chen.sig(aug, 2)
     np.testing.assert_allclose(sig_time, sig_manual)
 
