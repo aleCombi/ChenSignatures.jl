@@ -4,7 +4,7 @@ using ChenSignatures
 makedocs(;
     modules=[ChenSignatures],
     authors="Alessandro Combi <alecombi94@gmail.com>",
-    repo="https://github.com/aleCombi/ChenSignatures.jl/blob/{commit}{path}#{line}",
+    repo=Remotes.GitHub("aleCombi", "ChenSignatures.jl"),
     sitename="ChenSignatures.jl",
     format=Documenter.HTML(;
         prettyurls=get(ENV, "CI", "false") == "true",
@@ -15,10 +15,10 @@ makedocs(;
     pages=[
         "Home" => "index.md",
         "API Reference" => "api.md",
+        "How it works" => "algorithm.md",
         "Contributing" => "contributing.md",
     ],
     checkdocs=:exports,
-    warnonly=true,
 )
 
 deploydocs(;

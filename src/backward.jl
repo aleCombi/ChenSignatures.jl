@@ -195,7 +195,7 @@ Reverse pass of the truncated signature by reversibility.
 - `path`: the `N×D` path.
 - `S`: the signature of `path` (destroyed: it is rewound to the unit tensor).
 - `G`: the cotangent ∂L/∂S (destroyed). Level 0 is ignored.
-- `ws`: a [`SigBackwardWorkspace`](@ref).
+- `ws`: a `SigBackwardWorkspace`.
 
 Memory use does not depend on `N`.
 """
