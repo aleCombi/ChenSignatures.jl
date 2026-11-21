@@ -13,5 +13,6 @@ using ChenSignatures
     include("chain_rules.jl")
     include("test_backward.jl")
     include("test_logsig.jl")
+    include("test_words.jl")
     include("test_augmentations.jl")
 end

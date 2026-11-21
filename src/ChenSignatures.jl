@@ -12,6 +12,7 @@ include("conversions.jl")
 include("signatures.jl")
 include("backward.jl")
 include("logsig.jl")
+include("words.jl")
 include("augmentations.jl")
 
 using ChainRulesCore
@@ -27,6 +28,7 @@ export sig          # Compute truncated path signature (returns flattened vector
 export logsig       # Compute log-signature projected onto Lyndon basis
 export prepare      # Precompute Lyndon basis for log-signature computations
 export rolling_sig  # Compute signatures over rolling windows of a time series path
+export sig_words, sig_index, logsig_words  # Word labels of sig / logsig coordinates
 export time_augment # Add time as first coordinate
 export lead_lag     # Lead–lag transform (2N-1, 2D)
 export sig_time, sig_leadlag

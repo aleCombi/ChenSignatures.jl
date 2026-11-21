@@ -13,6 +13,16 @@ prepare
 rolling_sig
 ```
 
+## Word labels
+
+Which word each output coordinate belongs to:
+
+```@docs
+sig_words
+sig_index
+logsig_words
+```
+
 ## Path Augmentations
 
 Helpers for common path preprocessing patterns (time augmentation and lead–lag):
