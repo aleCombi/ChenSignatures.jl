@@ -6,14 +6,6 @@ using LinearAlgebra
 using Random
 
 @testset "sig - Comprehensive Gradient Tests" begin
-    # Skip Enzyme tests on Julia 1.12+ where support is experimental
-    # See: https://github.com/EnzymeAD/Enzyme.jl/issues/2699
-    # The wrapper pattern in signature_path! causes issues with Enzyme's AD on 1.12
-    # ChainRules/Zygote AD still works fine via the rrule definition
-    if VERSION >= v"1.12"
-        @info "Skipping Enzyme tests on Julia $(VERSION) (Enzyme's 1.12+ support is experimental)"
-        return
-    end
     # Make all tests deterministic
     Random.seed!(0)
 
@@ -167,5 +159,24 @@ using Random
 
         @test isapprox(grad_enzyme, grad_fwd; rtol=rtol, atol=atol)
         @test isapprox(grad_enzyme, grad_fd;  rtol=rtol, atol=atol)
+    end
+
+    # Regression: on Julia 1.13, d = 16 failed with EnzymeNoDerivativeError when
+    # update_signature_horner! rebuilt its offsets vector on every step.
+    # Random weights, so interior points matter (sum(sig) depends only on endpoints).
+    @testset "High dimension (d = 16, m = 4) – random weights" begin
+        path = randn(10, 16)
+        y = randn(sum(16^k for k in 1:4))
+        loss(p) = dot(sig(p, 4), y)
+
+        grad = zeros(size(path))
+        autodiff(Reverse, loss, Active, Duplicated(path, grad))
+
+        for (i, j) in ((1, 1), (5, 7), (10, 16))
+            p_plus  = copy(path); p_plus[i,j]  += eps
+            p_minus = copy(path); p_minus[i,j] -= eps
+            fd_ij = (loss(p_plus) - loss(p_minus)) / (2eps)
+            @test isapprox(grad[i,j], fd_ij; rtol=rtol, atol=1e-6)
+        end
     end
 end

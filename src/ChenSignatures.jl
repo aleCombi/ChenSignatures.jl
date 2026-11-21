@@ -12,6 +12,7 @@ include("lyndon_basis.jl")
 include("conversions.jl")
 include("signatures.jl")
 include("augmentations.jl")
+include("backward.jl")
 
 using ChainRulesCore
 using Enzyme

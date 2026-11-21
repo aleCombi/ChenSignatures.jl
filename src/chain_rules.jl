@@ -1,47 +1,32 @@
-function ChainRulesCore.rrule(::typeof(sig), path::AbstractMatrix{T}, m::Int) where T
-    # 1. Compute Primal (Forward pass)
-    result = sig(path, m)
-    
-    # 2. Define Pullback (Backward pass)
-    function sig_pullback(ȳ_raw)
-        # Unthunk retrieves the gradient from ChainRules wrapper
-        ȳ = ChainRulesCore.unthunk(ȳ_raw)
-        
-        # -----------------------------------------------------------
-        # OPTIMIZATION 1: Ensure Memory Layout
-        # -----------------------------------------------------------
-        # PyTorch sends a 'PyArray'. Enzyme requires standard 'Array'.
-        # If it's already an Array (e.g. from Julia), use it. 
-        # Otherwise copy it to a standard Julia Matrix.
-        path_dense = path isa Array ? path : copy(path)
-        
-        # Allocate gradient buffer (Shadow)
-        grad = zeros(T, size(path_dense))
-        
-        # -----------------------------------------------------------
-        # OPTIMIZATION 2: Avoid Closures for Enzyme
-        # -----------------------------------------------------------
-        # We define a helper that takes ALL arguments explicitly.
-        # This prevents "boxing" of 'm' or 'ȳ' which confuses Enzyme.
-        function signature_loss(p, _m, _y)
-            return dot(sig(p, _m), _y)
-        end
+# ChainRules for the signature. The pullbacks use the reversibility-based
+# reverse pass in backward.jl, so any ChainRules-aware AD backend (Zygote,
+# Diffractor, and others through their ChainRules bridges) gets an O(D^M)-memory
+# gradient that does not store the forward trajectory.
 
-        # -----------------------------------------------------------
-        # EXECUTION: Enzyme Autodiff
-        # -----------------------------------------------------------
-        # We allow Enzyme to differentiate 'signature_loss'.
-        # - Active: The return value (scalar dot product) has a derivative.
-        # - Duplicated(path, grad): Differentiate wrt 'path', store in 'grad'.
-        # - Const(m): 'm' is an integer constant.
-        # - Const(ȳ): 'ȳ' is the incoming gradient, treated as constant data here.
-        Enzyme.autodiff(Reverse, signature_loss, Active, 
-                        Duplicated(path_dense, grad), 
-                        Const(m), 
-                        Const(ȳ))
-        
-        return (NoTangent(), grad, NoTangent())
+_dense(x::Array) = x
+_dense(x::AbstractArray) = Array(x)
+
+function ChainRulesCore.rrule(::typeof(sig), path::AbstractMatrix{T}, m::Int) where {T}
+    y = sig(path, m)
+    function sig_pullback(ȳ_raw)
+        ȳ = ChainRulesCore.unthunk(ȳ_raw)
+        ȳ isa ChainRulesCore.AbstractZero && return (NoTangent(), ZeroTangent(), NoTangent())
+        p = _dense(path)
+        x̄ = _sig_vjp(p, Val(size(p, 2)), Val(m), y, ȳ)
+        return (NoTangent(), x̄, NoTangent())
     end
-    
-    return result, sig_pullback
+    return y, sig_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(sig), paths::AbstractArray{T,3}, m::Int;
+                              threaded::Bool=true) where {T}
+    Y = sig(paths, m; threaded=threaded)
+    function sig_batch_pullback(Ȳ_raw)
+        Ȳ = ChainRulesCore.unthunk(Ȳ_raw)
+        Ȳ isa ChainRulesCore.AbstractZero && return (NoTangent(), ZeroTangent(), NoTangent())
+        P = _dense(paths)
+        X̄ = _sig_vjp_batch(P, Val(size(P, 2)), Val(m), Y, Ȳ, threaded)
+        return (NoTangent(), X̄, NoTangent())
+    end
+    return Y, sig_batch_pullback
 end
