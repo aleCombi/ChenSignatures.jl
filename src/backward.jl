@@ -115,26 +115,10 @@ function _horner_step_adjoint!(
             c = inv(T(k - i))
             u0 = uoff[i]
             gi = off[i+1]            # start of level i in G
-            for r in 1:len
-                base = (r - 1) * D
-                acc = zero(T)
-                ur = U[u0 + r]
-                if vbar_src_is_G
-                    for d in 1:D
-                        vb = g[gk + base + d]
-                        acc = muladd(vb, z[d], acc)
-                        zbar[d] = muladd(c * vb, ur, zbar[d])
-                    end
-                else
-                    for d in 1:D
-                        vb = vbar_buf[base + d]
-                        acc = muladd(vb, z[d], acc)
-                        zbar[d] = muladd(c * vb, ur, zbar[d])
-                    end
-                end
-                ubar = c * acc
-                out_buf[r] = ubar
-                g[gi + r] += ubar
+            if vbar_src_is_G
+                _adjoint_level!(zbar, g, gi, out_buf, g, gk, U, u0, z, c, len)
+            else
+                _adjoint_level!(zbar, g, gi, out_buf, vbar_buf, 0, U, u0, z, c, len)
             end
             # ū_i becomes v̄_i for the next (lower) step
             vbar_src_is_G = false
@@ -147,6 +131,59 @@ function _horner_step_adjoint!(
         end
     end
     return SVector{D,T}(zbar)
+end
+
+# One transposed chain step. View V̄_{i+1} = src[so+1 : so+len*D] as a len × D
+# matrix (rows = prefixes, columns = last letter; rows are contiguous). Then
+#   ū_i = c V̄ z        -> written to out[1:len] and added to g[gi+1 : gi+len]
+#   z̄  += c V̄ᵀ u_i
+# `src` may be the same array as `g`: it is read at level i+1 and g is written
+# at level i, which do not overlap.
+#
+# Two loop shapes, picked at compile time from D (measured per step):
+# - small D: one fused row loop is fastest (D = 4: 3.7 vs 5.2 μs, D = 8: 14 vs 18);
+# - large D: two passes with @simd inner loops (D = 16: 28 vs 47 μs).
+const _ADJOINT_TWO_PASS_MIN_D = 12
+
+@inline function _adjoint_level!(
+    zbar::MVector{D,T}, g::Vector{T}, gi::Int, out::Vector{T},
+    src::Vector{T}, so::Int, U::Vector{T}, u0::Int,
+    z::SVector{D,T}, c::T, len::Int,
+) where {D,T}
+    if D < _ADJOINT_TWO_PASS_MIN_D
+        @inbounds for r in 1:len
+            base = so + (r - 1) * D
+            acc = zero(T)
+            ur = U[u0 + r]
+            for d in 1:D
+                vb = src[base + d]
+                acc = muladd(vb, z[d], acc)
+                zbar[d] = muladd(c * vb, ur, zbar[d])
+            end
+            ubar = c * acc
+            out[r] = ubar
+            g[gi + r] += ubar
+        end
+        return nothing
+    end
+    @inbounds for r in 1:len
+        base = so + (r - 1) * D
+        acc = zero(T)
+        @simd for d in 1:D
+            acc = muladd(src[base + d], z[d], acc)
+        end
+        ubar = c * acc
+        out[r] = ubar
+        g[gi + r] += ubar
+    end
+    @inbounds for r in 1:len
+        base = so + (r - 1) * D
+        cu = c * U[u0 + r]
+        @simd for d in 1:D
+            zbar[d] = muladd(cu, src[base + d], zbar[d])
+        end
+    end
+    return nothing
 end
 
 """
