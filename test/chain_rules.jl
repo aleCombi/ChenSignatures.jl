@@ -12,7 +12,6 @@ using Random
     Random.seed!(42)
     
     @testset "Basic rrule functionality" begin
-        # Skip on Julia 1.12+ (rrule uses Enzyme internally, experimental support)
         path = [0.0 0.0; 1.0 1.0; 2.0 3.0]
         m = 3
 
@@ -33,7 +32,6 @@ using Random
     end
     
     @testset "Zygote integration - sum loss" begin
-        # Skip Enzyme comparison on Julia 1.12+ (experimental support)
         path = randn(4, 2)
 
         # Compute gradient with Zygote
@@ -47,7 +45,6 @@ using Random
     end
     
     @testset "Zygote integration - specific coefficient" begin
-        # Skip Enzyme comparison on Julia 1.12+ (experimental support)
         path = randn(4, 2)
         idx = 5
 
@@ -60,7 +57,6 @@ using Random
     end
 
     @testset "Zygote integration - L2 loss" begin
-        # Skip Enzyme comparison on Julia 1.12+ (experimental support)
         path = randn(4, 2)
 
         grad_zygote = Zygote.gradient(p -> sum(abs2, sig(p, 3)), path)[1]
@@ -135,7 +131,6 @@ using Random
     end
     
     @testset "Longer paths" begin
-        # Skip Enzyme comparison on Julia 1.12+ (experimental support)
         path = randn(20, 2)
 
         grad_zygote = Zygote.gradient(p -> sum(sig(p, 3)), path)[1]
