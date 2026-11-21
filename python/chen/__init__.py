@@ -106,10 +106,7 @@ def sig(path, m: int, threaded: bool = True) -> np.ndarray:
 
     # Call Julia function (dispatch handles 2D vs 3D)
     # Only pass threaded kwarg for batch (3D) case
-    if coords not in ("lyndon", "words", "expanded"):
-        raise ValueError(f"coords must be 'lyndon', 'words' or 'expanded', got {coords!r}")
     kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
-    kwargs["coords"] = jl.Symbol(coords)
     res = jl.ChenSignatures.sig(arr, m, **kwargs)
 
     # Convert back to numpy
@@ -219,7 +216,10 @@ def logsig(path, basis, threaded: bool = True, coords: str = "lyndon") -> np.nda
 
     # Call Julia function (dispatch handles 2D vs 3D)
     # Only pass threaded kwarg for batch (3D) case
+    if coords not in ("lyndon", "words", "expanded"):
+        raise ValueError(f"coords must be 'lyndon', 'words' or 'expanded', got {coords!r}")
     kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
+    kwargs["coords"] = jl.Symbol(coords)
     res = jl.ChenSignatures.logsig(arr, basis, **kwargs)
 
     # Convert Julia vector to numpy array
