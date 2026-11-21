@@ -195,8 +195,6 @@ function signature_path! end
 
 # Allocating version (for user convenience)
 # Simple wrappers that create workspace and delegate to the 3-arg version
-# Note: Enzyme AD on Julia 1.12 has issues with this pattern (experimental support)
-# but ChainRules/Zygote AD works fine via the rrule definition
 function signature_path!(out::Tensor{T,D,M}, path::AbstractMatrix{T}) where {T,D,M}
     ws = SignatureWorkspace{T,D,M}()
     return signature_path!(out, path, ws)

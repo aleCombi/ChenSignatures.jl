@@ -5,15 +5,13 @@ authors = ["Alessandro Combi <alecombi94@gmail.com>"]
 
 [deps]
 ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
-Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
 ChainRulesCore = "1.26.0"
-Enzyme = "0.13.108"
 LinearAlgebra = "1.10"
-SparseArrays = "1.10"
+PrecompileTools = "1.4.0"
 StaticArrays = "1.9"
 julia = "1.10"

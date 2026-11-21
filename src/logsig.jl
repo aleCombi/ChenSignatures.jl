@@ -15,7 +15,28 @@
 # 2^(|w|-1) terms). If ℓ are the Lyndon-basis coordinates of log(sig) and u its
 # coefficients at the Lyndon words, then u = L ℓ, so ℓ = L \ u.
 
-using SparseArrays
+# Strictly lower-triangular sparse matrix in compressed-column form. A tiny
+# local type instead of SparseArrays, which would add ~0.2 s to package load.
+struct _LowerCSC{T}
+    n::Int
+    colptr::Vector{Int}      # entries of column j are colptr[j]:colptr[j+1]-1
+    rowval::Vector{Int}
+    nzval::Vector{T}
+end
+
+function _LowerCSC(rows::Vector{Int}, cols::Vector{Int}, vals::Vector{T}, n::Int) where {T}
+    perm = sortperm(collect(zip(cols, rows)))
+    colptr = zeros(Int, n + 1)
+    colptr[1] = 1
+    for c in cols
+        colptr[c + 1] += 1
+    end
+    cumsum!(colptr, colptr)
+    @assert colptr[end] == length(rows) + 1
+    return _LowerCSC{T}(n, colptr, rows[perm], vals[perm])
+end
+
+nnz_lower(L::_LowerCSC) = length(L.nzval)
 
 # All Lyndon words over the letters 1..d with length ≤ n, ordered by length and
 # lexicographically within a length (Duval's algorithm generates them
@@ -111,17 +132,17 @@ function _build_lyndon_projection(d::Int, m::Int)
             end
         end
     end
-    Lstrict = sparse(rows, cols, Float64.(vals), nL, nL)
+    Lstrict = _LowerCSC(rows, cols, Float64.(vals), nL)
     return words, flat_idx, Lstrict
 end
 
 # Solve (I + Lstrict) x = u in place (forward substitution, column oriented).
-function _lyndon_solve!(x::AbstractVector{T}, Ls::SparseMatrixCSC) where {T}
-    rv = rowvals(Ls); nz = nonzeros(Ls)
-    @inbounds for j in 1:size(Ls, 2)
+function _lyndon_solve!(x::AbstractVector{T}, Ls::_LowerCSC) where {T}
+    rv = Ls.rowval; nz = Ls.nzval; cp = Ls.colptr
+    @inbounds for j in 1:Ls.n
         xj = x[j]
         iszero(xj) && continue
-        for p in nzrange(Ls, j)
+        for p in cp[j]:cp[j+1]-1
             x[rv[p]] -= T(nz[p]) * xj
         end
     end
@@ -129,11 +150,11 @@ function _lyndon_solve!(x::AbstractVector{T}, Ls::SparseMatrixCSC) where {T}
 end
 
 # Solve (I + Lstrict)ᵀ y = b in place (back substitution).
-function _lyndon_solve_transpose!(y::AbstractVector{T}, Ls::SparseMatrixCSC) where {T}
-    rv = rowvals(Ls); nz = nonzeros(Ls)
-    @inbounds for j in size(Ls, 2):-1:1
+function _lyndon_solve_transpose!(y::AbstractVector{T}, Ls::_LowerCSC) where {T}
+    rv = Ls.rowval; nz = Ls.nzval; cp = Ls.colptr
+    @inbounds for j in Ls.n:-1:1
         s = y[j]
-        for p in nzrange(Ls, j)
+        for p in cp[j]:cp[j+1]-1
             s -= T(nz[p]) * y[rv[p]]
         end
         y[j] = s
@@ -156,7 +177,7 @@ struct BasisCache{T}
     m::Int
     lynds::Vector{Word}          # Lyndon words, by length then lexicographically
     idx::Vector{Int}             # position of each Lyndon word in a flattened signature
-    L::SparseMatrixCSC{T,Int}    # strictly lower part of the unit lower-triangular projection
+    L::_LowerCSC{T}              # strictly lower part of the unit lower-triangular projection
 end
 
 """

@@ -15,8 +15,8 @@ include("logsig.jl")
 include("augmentations.jl")
 
 using ChainRulesCore
-using Enzyme
 include("chain_rules.jl")
+include("precompile.jl")
 
 # ============================================================================
 # Public API Exports
