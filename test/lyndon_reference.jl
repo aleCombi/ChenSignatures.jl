@@ -1,4 +1,9 @@
+# Reference implementation of the Lyndon projection (the pre-0.5.1 code: dense L,
+# built with SparseTensor brackets). Used only to cross-check the fast version.
+module LyndonReference
 using LinearAlgebra
+using ChenSignatures: Word, SparseTensor, Tensor, single_letter_element, mul!
+
 
 function is_lyndon(w::Word)
     idxs = w.indices
@@ -97,4 +102,5 @@ function project_to_lyndon(u_dense::Tensor{T1}, lynds::Vector{Word}, L::Matrix{T
     end
     ℓ = LowerTriangular(L) \ u
     return ℓ
+end
 end

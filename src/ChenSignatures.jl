@@ -8,9 +8,9 @@ abstract type AbstractTensor{T} end
 include("generic_ops.jl")
 include("sparse_tensors.jl")
 include("dense_tensors.jl")
-include("lyndon_basis.jl")
 include("conversions.jl")
 include("signatures.jl")
+include("logsig.jl")
 include("augmentations.jl")
 include("backward.jl")
 
