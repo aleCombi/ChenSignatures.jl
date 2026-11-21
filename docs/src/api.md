@@ -42,6 +42,15 @@ Advanced users may need direct access to tensor-based computations:
 signature_path
 ```
 
+## Advanced (not exported)
+
+In-place signature into a preallocated [`Tensor`](@ref), optionally reusing a
+[`SignatureWorkspace`](@ref). Call it as `ChenSignatures.signature_path!`.
+
+```@docs
+ChenSignatures.signature_path!
+```
+
 ## Index
 
 ```@index

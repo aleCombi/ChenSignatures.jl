@@ -253,4 +253,3 @@ end
     return dest
 end
 
-export SparseTensor, Word, shuffle_product, bracket
