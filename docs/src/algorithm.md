@@ -115,3 +115,47 @@ The price of rebuilding is rounding drift: each ``\otimes \exp(-z)`` adds a litt
 growing with ``N`` and the size of the increments. In practice it is small: rewinding a
 10 000-step path with unit-scale increments (``D = 4``, ``M = 5``) returns to the unit
 tensor within ``1.3 \cdot 10^{-10}``.
+
+## Log-signatures
+
+[`logsig`](@ref) computes the signature ``S``, its tensor logarithm, and then the
+requested coordinates:
+
+```math
+\log S = \sum_{k=1}^{M} \frac{(-1)^{k+1}}{k} X^k, \qquad X = S - 1 .
+```
+
+Since ``X`` has no level-0 term, ``X^k`` vanishes below level ``k``, so each power is
+computed only from level ``k`` up.
+
+**Coordinates.** For a Lyndon word ``w`` with standard factorisation ``w = uv`` (``v``
+the longest proper Lyndon suffix), the Lyndon basis element is the bracket
+``P_w = [P_u, P_v] = P_u P_v - P_v P_u``, with ``P_a = a`` for letters.
+``P_w`` equals ``w`` plus lexicographically larger words of the same length, so the
+matrix ``L_{uw}`` (the coefficient of the Lyndon word ``u`` in ``P_w``) is unit lower
+triangular. If ``u`` are the coefficients of ``\log S`` at the Lyndon words
+(`coords=:words`) and ``\ell`` its Lyndon-basis coordinates (`coords=:lyndon`), then
+``u = L \ell``.
+
+``L`` is block diagonal by level and very sparse (``P_w`` has at most ``2^{|w|-1}``
+terms), so [`prepare`](@ref) stores it as a sparse matrix built directly from integer
+word indices, and ``\ell = L^{-1} u`` is a sparse forward substitution. At ``d = 16``,
+``m = 4`` (17 816 Lyndon words) the matrix has about 21 000 nonzeros.
+
+**Gradient.** The reverse pass runs the same steps backwards:
+
+1. `:lyndon`: ``\bar u = L^{-T} \bar \ell`` (sparse back substitution); `:words`:
+   ``\bar u = \bar y``. Scatter ``\bar u`` to the Lyndon-word positions of a tensor
+   ``\bar G = \partial L / \partial \log S`` (for `:expanded`, ``\bar G = \bar y``).
+2. Reverse the power series, with ``P_k = X^k``: start from
+   ``\bar P_M = c_M \bar G`` and for ``k = M, \dots, 2``
+   ```math
+   \bar P_{k-1} = c_{k-1} \bar G + \bar P_k \triangleleft X, \qquad
+   \bar X \mathrel{+}= P_{k-1} \triangleright \bar P_k ,
+   ```
+   where ``(\bar P \triangleleft X)(u) = \sum_v \bar P(uv) X(v)`` and
+   ``(P \triangleright \bar P)(v) = \sum_u P(u) \bar P(uv)``; finally
+   ``\bar X \mathrel{+}= \bar P_1``. Only the ``M - 1`` powers are stored.
+3. ``\bar S = \bar X`` goes into the reversible signature backward pass above.
+
+The forward pass of the `rrule` keeps the signature so step 3 does not recompute it.

@@ -251,9 +251,14 @@ function _log_levels!(out::Tensor{T,D,M}, S::Tensor{T,D,M},
 end
 
 # Write the coordinates of log(sig(path)) into `y`.
+# If `sflat` is given, the flattened signature (levels 1..M) is also stored there,
+# so a later reverse pass does not need to recompute it.
 function _logsig!(y::AbstractVector, path::AbstractMatrix{T}, basis::BasisCache,
-                  coords::Symbol, ws::LogSigWorkspace{T,D,M}) where {T,D,M}
+                  coords::Symbol, ws::LogSigWorkspace{T,D,M}, sflat=nothing) where {T,D,M}
     signature_path!(ws.S, path, ws.sws)
+    if sflat !== nothing
+        copyto!(sflat, 1, ws.S.coeffs, ws.S.offsets[2] + 1, length(sflat))
+    end
     _log_levels!(ws.Lg, ws.S, ws.P, ws.Q)
     _write_coords!(y, ws.Lg, basis, coords)
     return y
@@ -316,9 +321,12 @@ function logsig(path::AbstractMatrix{T}, basis::BasisCache; coords::Symbol=:lynd
     return _logsig_single(path, basis, coords, Val(D), Val(basis.m))
 end
 
-function _logsig_single(path::AbstractMatrix{T}, basis, coords, ::Val{D}, ::Val{M}) where {T,D,M}
+function _logsig_single(path::AbstractMatrix{T}, basis, coords, ::Val{D}, ::Val{M};
+                        keep_sig::Bool=false) where {T,D,M}
     y = Vector{T}(undef, _logsig_length(basis, coords))
-    return _logsig!(y, path, basis, coords, LogSigWorkspace{T,D,M}())
+    sflat = keep_sig ? Vector{T}(undef, sum(D^k for k in 1:M)) : nothing
+    _logsig!(y, path, basis, coords, LogSigWorkspace{T,D,M}(), sflat)
+    return keep_sig ? (y, sflat) : y
 end
 
 function logsig(paths::AbstractArray{T,3}, basis::BasisCache;
@@ -331,19 +339,163 @@ function logsig(paths::AbstractArray{T,3}, basis::BasisCache;
 end
 
 function _logsig_batch(paths::AbstractArray{T,3}, basis, coords, threaded,
-                       ::Val{D}, ::Val{M}) where {T,D,M}
+                       ::Val{D}, ::Val{M}; keep_sig::Bool=false) where {T,D,M}
     B = size(paths, 3)
     Y = Matrix{T}(undef, _logsig_length(basis, coords), B)
+    Sg = keep_sig ? Matrix{T}(undef, sum(D^k for k in 1:M), B) : nothing
+    sv(b) = Sg === nothing ? nothing : view(Sg, :, b)
     if threaded
         Threads.@threads for b in 1:B
             local wsb = LogSigWorkspace{T,D,M}()
-            _logsig!(@view(Y[:, b]), @view(paths[:, :, b]), basis, coords, wsb)
+            _logsig!(@view(Y[:, b]), @view(paths[:, :, b]), basis, coords, wsb, sv(b))
         end
     else
         ws = LogSigWorkspace{T,D,M}()
         for b in 1:B
-            _logsig!(@view(Y[:, b]), @view(paths[:, :, b]), basis, coords, ws)
+            _logsig!(@view(Y[:, b]), @view(paths[:, :, b]), basis, coords, ws, sv(b))
         end
     end
-    return Y
+    return keep_sig ? (Y, Sg) : Y
+end
+
+# ============================================================================
+# Reverse pass
+# ============================================================================
+#
+# log(S) = Σ_{k=1}^M c_k X^k, c_k = (-1)^{k+1}/k, X = S - 1, with powers
+# P_1 = X, P_k = P_{k-1} ⊗ X. Given Ḡ = ∂L/∂log(S):
+#   P̄_M = c_M Ḡ
+#   for k = M..2:   P̄_{k-1} = c_{k-1} Ḡ + P̄_k ◁ X      (P̄_k ◁ X)(u) = Σ_v P̄_k(uv) X(v)
+#                   X̄      += P_{k-1} ▷ P̄_k            (P ▷ P̄)(v)  = Σ_u P(u) P̄(uv)
+#   X̄ += P̄_1,  and ∂L/∂S = X̄ (levels ≥ 1).
+# P_k vanishes below level k, so only levels ≥ k of P̄_k matter. Both
+# contractions read the same rows of P̄_k, so they share one pass.
+
+struct LogSigBackWorkspace{T,D,M}
+    fwd::LogSigWorkspace{T,D,M}
+    pows::Vector{Tensor{T,D,M}}      # pows[k] = X^k for k = 2..M-1 (pows[1] unused: X is S)
+    Gl::Tensor{T,D,M}                # ∂L/∂log(S)
+    Pb::Tensor{T,D,M}
+    Pb2::Tensor{T,D,M}
+    Xb::Tensor{T,D,M}                # ∂L/∂S
+    bws::SigBackwardWorkspace{T,D,M}
+end
+LogSigBackWorkspace{T,D,M}() where {T,D,M} = LogSigBackWorkspace{T,D,M}(
+    LogSigWorkspace{T,D,M}(), [Tensor{T,D,M}() for _ in 1:max(M - 1, 1)],
+    Tensor{T,D,M}(), Tensor{T,D,M}(), Tensor{T,D,M}(), Tensor{T,D,M}(),
+    SigBackwardWorkspace{T,D,M}())
+
+# Pdst_i += Σ_j P̄_{i+j} X_j  and  X̄_j += Σ_i P_i P̄_{i+j}, over i ≥ kmin, j ≥ 1, i+j ≤ M.
+function _log_step_adjoint!(Pdst::Tensor{T,D,M}, Xb::Tensor{T,D,M}, Pb::Tensor{T,D,M},
+                            X::Tensor{T,D,M}, P::Tensor{T,D,M}, kmin::Int) where {T,D,M}
+    pd, xb, pb, x, p = Pdst.coeffs, Xb.coeffs, Pb.coeffs, X.coeffs, P.coeffs
+    off = X.offsets
+    @inbounds for i in kmin:M-1, j in 1:M-i
+        ps = off[i+1]; xs = off[j+1]; cs = off[i+j+1]
+        blen = D^j
+        for a in 1:D^i
+            row = cs + (a - 1) * blen
+            pa = p[ps + a]
+            acc = zero(T)
+            @simd for b in 1:blen
+                cb = pb[row + b]
+                acc = muladd(cb, x[xs + b], acc)
+                xb[xs + b] = muladd(pa, cb, xb[xs + b])
+            end
+            pd[ps + a] += acc
+        end
+    end
+    return nothing
+end
+
+# Given ws.fwd.S = S, compute ws.Xb = ∂L/∂S from ws.Gl = ∂L/∂log(S).
+function _log_pullback!(ws::LogSigBackWorkspace{T,D,M}) where {T,D,M}
+    S = ws.fwd.S
+    Gl, Xb = ws.Gl, ws.Xb
+    fill!(Xb.coeffs, zero(T))
+    c(k) = T(isodd(k) ? 1 : -1) / T(k)
+    if M == 1
+        copyto!(Xb.coeffs, Gl.coeffs)
+        Xb.coeffs[Xb.offsets[1] + 1] = zero(T)
+        return Xb
+    end
+    # powers X^k, k = 2..M-1 (X^1 is S itself: level 0 is never read)
+    prev = S
+    for k in 2:M-1
+        _mul_from_level!(ws.pows[k], prev, S, k - 1)
+        prev = ws.pows[k]
+    end
+    Pb, Pb2 = ws.Pb, ws.Pb2
+    Pb.coeffs .= c(M) .* Gl.coeffs
+    for k in M:-1:2
+        Pb2.coeffs .= c(k - 1) .* Gl.coeffs
+        Pk1 = k == 2 ? S : ws.pows[k-1]
+        _log_step_adjoint!(Pb2, Xb, Pb, S, Pk1, k - 1)
+        Pb, Pb2 = Pb2, Pb
+    end
+    Xb.coeffs .+= Pb.coeffs                    # X̄ += P̄_1
+    Xb.coeffs[Xb.offsets[1] + 1] = zero(T)
+    return Xb
+end
+
+# ∂L/∂path for one path, given ȳ = ∂L/∂logsig. Uses the stored flattened
+# signature `sflat` if given, otherwise recomputes it.
+function _logsig_vjp!(xbar::AbstractMatrix{T}, path::AbstractMatrix{T}, ybar::AbstractVector,
+                      basis::BasisCache, coords::Symbol,
+                      ws::LogSigBackWorkspace{T,D,M}, sflat=nothing) where {T,D,M}
+    S = ws.fwd.S
+    if sflat === nothing
+        signature_path!(S, path, ws.fwd.sws)
+    else
+        _unflatten!(S, sflat)
+    end
+
+    # ȳ -> ∂L/∂log(S) as a dense tensor
+    g = ws.Gl.coeffs; s1 = ws.Gl.offsets[2]
+    fill!(g, zero(T))
+    if coords === :expanded
+        @inbounds for f in eachindex(ybar)
+            g[s1 + f] = T(ybar[f])
+        end
+    else
+        v = ws.fwd.Lg.coeffs                   # reuse as a length-#Lyndon buffer
+        nL = length(basis.idx)
+        @inbounds for j in 1:nL
+            v[j] = T(ybar[j])
+        end
+        coords === :lyndon && _lyndon_solve_transpose!(view(v, 1:nL), basis.L)
+        @inbounds for (j, f) in enumerate(basis.idx)
+            g[s1 + f] = v[j]
+        end
+    end
+
+    _log_pullback!(ws)
+    return sig_pullback!(xbar, path, S, ws.Xb, ws.bws)   # rewinds S
+end
+
+function _logsig_vjp(path::AbstractMatrix{T}, ybar, basis, coords,
+                     ::Val{D}, ::Val{M}, sflat=nothing) where {T,D,M}
+    xbar = similar(path, T, size(path))
+    return _logsig_vjp!(xbar, path, ybar, basis, coords, LogSigBackWorkspace{T,D,M}(), sflat)
+end
+
+function _logsig_vjp_batch(paths::AbstractArray{T,3}, Ybar::AbstractMatrix, basis, coords,
+                           threaded::Bool, ::Val{D}, ::Val{M}, Sg=nothing) where {T,D,M}
+    sv(b) = Sg === nothing ? nothing : view(Sg, :, b)
+    N, _, B = size(paths)
+    X̄ = zeros(T, N, D, B)
+    if threaded
+        Threads.@threads for b in 1:B
+            local wsb = LogSigBackWorkspace{T,D,M}()
+            _logsig_vjp!(@view(X̄[:, :, b]), @view(paths[:, :, b]), @view(Ybar[:, b]),
+                         basis, coords, wsb, sv(b))
+        end
+    else
+        ws = LogSigBackWorkspace{T,D,M}()
+        for b in 1:B
+            _logsig_vjp!(@view(X̄[:, :, b]), @view(paths[:, :, b]), @view(Ybar[:, b]),
+                         basis, coords, ws, sv(b))
+        end
+    end
+    return X̄
 end

@@ -106,7 +106,10 @@ def sig(path, m: int, threaded: bool = True) -> np.ndarray:
 
     # Call Julia function (dispatch handles 2D vs 3D)
     # Only pass threaded kwarg for batch (3D) case
+    if coords not in ("lyndon", "words", "expanded"):
+        raise ValueError(f"coords must be 'lyndon', 'words' or 'expanded', got {coords!r}")
     kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
+    kwargs["coords"] = jl.Symbol(coords)
     res = jl.ChenSignatures.sig(arr, m, **kwargs)
 
     # Convert back to numpy
@@ -141,7 +144,7 @@ def prepare_logsig(d: int, m: int):
     return jl.ChenSignatures.prepare(d, m)
 
 
-def logsig(path, basis, threaded: bool = True) -> np.ndarray:
+def logsig(path, basis, threaded: bool = True, coords: str = "lyndon") -> np.ndarray:
     """
     Compute the log-signature of a path or batch of paths using a precomputed basis.
 
@@ -159,6 +162,12 @@ def logsig(path, basis, threaded: bool = True) -> np.ndarray:
         basis: Basis object returned by `prepare_logsig(d, m)` (a Julia `BasisCache`).
         threaded: If True (default), use multi-threading for batch processing.
                  Ignored for single path input.
+        coords: Coordinates of the output:
+            - "lyndon" (default): Lyndon basis of the free Lie algebra
+              (iisignature's default, pySigLib method=2).
+            - "words": coefficients of the tensor logarithm at the Lyndon words
+              (Signatory's default, pySigLib method=1). Same length.
+            - "expanded": the full tensor logarithm, same length as `sig`.
 
     Returns:
         - Single path (N, d): Returns (L,) array of log-signature coefficients
@@ -174,13 +183,13 @@ def logsig(path, basis, threaded: bool = True) -> np.ndarray:
         >>> basis = chen.prepare_logsig(3, 4)
         >>> logsig = chen.logsig(path, basis)
         >>> logsig.shape
-        (18,)  # Much more compact than sig (18 vs 120)
+        (32,)  # Much more compact than sig (32 vs 120)
 
         # Batch of paths (with float32)
         >>> paths = np.random.randn(100, 3, 50).astype(np.float32)
         >>> logsigs = chen.logsig(paths, basis, threaded=True)
         >>> logsigs.shape
-        (18, 50)  # (num_lyndon_words, batch_size)
+        (32, 50)  # (num_lyndon_words, batch_size)
     """
     # Convert to numpy array and preserve float dtype (float32/float64)
     arr = np.asarray(path)

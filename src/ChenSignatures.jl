@@ -10,9 +10,9 @@ include("sparse_tensors.jl")
 include("dense_tensors.jl")
 include("conversions.jl")
 include("signatures.jl")
+include("backward.jl")
 include("logsig.jl")
 include("augmentations.jl")
-include("backward.jl")
 
 using ChainRulesCore
 using Enzyme
@@ -38,8 +38,8 @@ export signature_path      # Lower-level signature computation (returns Tensor)
 export SignatureWorkspace  # Preallocated workspace for zero-allocation hot paths
 export BasisCache          # Cached Lyndon basis data for logsig
 
-# Note: SparseTensor, Word, shuffle_product, lyndon_words, build_L, and
-# project_to_lyndon are internal implementation details and not exported.
+# Note: SparseTensor, Word, shuffle_product and the Lyndon-basis helpers in
+# logsig.jl are internal implementation details and not exported.
 # Advanced users can access them via ChenSignatures.SparseTensor, etc.
 
 end
