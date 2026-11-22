@@ -5,16 +5,27 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, without the v (e.g. 0.6.1); must already be tagged'
+        required: true
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref }}
       
       - name: Extract version from tag
         id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: echo "version=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" | sed 's/=v/=/' >> $GITHUB_OUTPUT
+      
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
       
       # Wait for Julia General registry to sync
       - name: Verify Julia package is available
