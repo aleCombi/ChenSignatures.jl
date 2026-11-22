@@ -23,6 +23,16 @@ sig_index
 logsig_words
 ```
 
+## Signature kernels
+
+Kernels ``k(x, y) = ⟨S(x), S(y)⟩``, untruncated (PDE) or truncated, and their Gram
+matrices for kernel methods:
+
+```@docs
+sig_kernel
+sig_gram
+```
+
 ## Path Augmentations
 
 Helpers for common path preprocessing patterns (time augmentation and lead–lag):

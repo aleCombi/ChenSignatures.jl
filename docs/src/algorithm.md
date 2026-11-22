@@ -159,3 +159,43 @@ word indices, and ``\ell = L^{-1} u`` is a sparse forward substitution. At ``d =
 3. ``\bar S = \bar X`` goes into the reversible signature backward pass above.
 
 The forward pass of the `rrule` keeps the signature so step 3 does not recompute it.
+
+## Signature kernels
+
+[`sig_kernel`](@ref) without a level computes the untruncated kernel
+``k(x, y) = \sum_{k \ge 0} \langle S_k(x), S_k(y) \rangle``. As a function of the two end
+times, ``K(s, t) = \langle S(x)_{[0,s]}, S(y)_{[0,t]} \rangle`` solves the Goursat problem
+(Salvi et al., 2021)
+
+```math
+\frac{\partial^2 K}{\partial s \, \partial t} = \langle \dot x(s), \dot y(t) \rangle \, K,
+\qquad K(0, \cdot) = K(\cdot, 0) = 1 .
+```
+
+For piecewise-linear paths ``\langle \dot x, \dot y \rangle`` is constant on each cell
+of the grid of path points, equal to ``c = \langle \Delta x_p, \Delta y_q \rangle``.
+Each increment is split into ``2^\lambda`` pieces (`dyadic_order` ``= \lambda``), so a
+refined cell carries ``c / 4^\lambda``, and the explicit second-order scheme is
+
+```math
+K_{i+1,j+1} = (K_{i+1,j} + K_{i,j+1}) \Big(1 + \frac{c}{2} + \frac{c^2}{12}\Big)
+  - K_{i,j} \Big(1 - \frac{c^2}{12}\Big).
+```
+
+The error falls by about 4 per refinement. The cost is ``O(N M d)`` for the inner
+products plus ``O(N M 4^\lambda)`` for the grid, independent of any truncation level.
+
+**Gram matrices.** Along a grid row each cell needs the one before it, a serial chain
+that leaves the CPU waiting on latency. [`sig_gram`](@ref) therefore solves 16 pairs
+side by side, one per SIMD lane. A group shares its ``x`` path, so the inner products of
+all its pairs are one matrix product. The one-batch form computes only ``a \le b``.
+
+**Gradient.** The adjoint runs the recurrence backwards over the stored grid: each cell
+sends ``\bar K_{i+1,j+1}`` times the coefficients to its three predecessors, and
+``\bar K_{i+1,j+1} \, \partial K_{i+1,j+1} / \partial c`` to the cell's inner product
+``\bar c``. Then ``\overline{\Delta x} = \bar C \, \Delta Y`` and
+``\overline{\Delta y} = \bar C^T \Delta X``. Memory is one grid per thread, not one per pair.
+
+The truncated kernel `sig_kernel(x, y, m)` is ``1 + \langle \text{sig}(x, m), \text{sig}(y, m) \rangle``,
+and `sig_gram(X, Y, m)` is one matrix product of batched signatures; their gradients
+come from the rules for [`sig`](@ref).

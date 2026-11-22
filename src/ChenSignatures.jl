@@ -14,6 +14,7 @@ include("backward.jl")
 include("logsig.jl")
 include("words.jl")
 include("augmentations.jl")
+include("kernels.jl")
 
 using ChainRulesCore
 include("chain_rules.jl")
@@ -33,6 +34,7 @@ export time_augment # Add time as first coordinate
 export lead_lag     # Lead–lag transform (2N-1, 2D)
 export sig_time, sig_leadlag
 export logsig_time, logsig_leadlag
+export sig_kernel, sig_gram  # Signature kernels (PDE and truncated) and Gram matrices
 #
 # Core types and lower-level API:
 export Tensor              # Dense tensor algebra representation

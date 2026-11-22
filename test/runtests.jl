@@ -14,5 +14,6 @@ using ChenSignatures
     include("test_backward.jl")
     include("test_logsig.jl")
     include("test_words.jl")
+    include("test_kernels.jl")
     include("test_augmentations.jl")
 end

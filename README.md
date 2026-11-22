@@ -30,6 +30,10 @@ logsig(path, basis)               # 32-vector
 paths = randn(50, 3, 32)          # N × d × batch
 sig(paths, 4)                     # 120 × 32, threaded
 logsig(paths, basis)              # 32 × 32
+
+sig_kernel(path, randn(80, 3))    # untruncated signature kernel (PDE)
+sig_gram(paths; dyadic_order=1)   # 32 × 32 Gram matrix, threaded
+sig_gram(paths, 4)                # truncated at level 4
 ```
 
 Also available: `time_augment`, `lead_lag` (and the `sig_time`, `sig_leadlag`
@@ -40,7 +44,7 @@ Python bindings: [`chen-signatures`](./python).
 
 ## Future work
 
-- Signature kernels
+- Static kernels (RBF, …) inside the signature kernel
 - Neural / rough CDEs
 - GPU kernels
 

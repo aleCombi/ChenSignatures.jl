@@ -18,5 +18,10 @@ using PrecompileTools: @setup_workload, @compile_workload
             l, lback = ChainRulesCore.rrule(logsig, p, b); lback(l)
             L, lbackB = ChainRulesCore.rrule(logsig, P, b); lbackB(L)
         end
+        # the PDE kernel is not specialised on the shape: one call covers all
+        P = [sin(i + 2j + k) for i in 1:4, j in 1:2, k in 1:3]
+        k, kback = ChainRulesCore.rrule(sig_kernel, P[:, :, 1], P[:, :, 2]); kback(k)
+        K, Kback = ChainRulesCore.rrule(sig_gram, P, P); Kback(K)
+        K, Kback = ChainRulesCore.rrule(sig_gram, P); Kback(K)
     end
 end
