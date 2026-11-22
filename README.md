@@ -38,8 +38,10 @@ sig_gram(paths, 4)                # truncated at level 4
 ```
 
 Also available: `time_augment`, `lead_lag` (and the `sig_time`, `sig_leadlag`
-shortcuts), `rolling_sig` for sliding windows, and gradients of `sig` through
-ChainRules (Zygote) and Enzyme. See the [docs](https://aleCombi.github.io/ChenSignatures.jl).
+shortcuts), `rolling_sig` for sliding windows, and word labels (`sig_words`,
+`sig_index`, `logsig_words`). Everything above is differentiable with Zygote, Enzyme
+and Mooncake, all running the same handwritten adjoints. See the
+[docs](https://aleCombi.github.io/ChenSignatures.jl).
 
 Python bindings: [`chen-signatures`](./python).
 

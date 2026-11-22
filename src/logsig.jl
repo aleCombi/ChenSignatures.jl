@@ -339,7 +339,8 @@ function logsig(path::AbstractMatrix{T}, basis::BasisCache; coords::Symbol=:lynd
     N, D = size(path)
     _check_logsig_input(N, D, basis)
     _check_coords(coords)
-    return _logsig_single(path, basis, coords, Val(D), Val(basis.m))
+    # Val(D) is a runtime dispatch: assert the type so callers (and Enzyme) infer it
+    return _logsig_single(path, basis, coords, Val(D), Val(basis.m))::Vector{T}
 end
 
 function _logsig_single(path::AbstractMatrix{T}, basis, coords, ::Val{D}, ::Val{M};
@@ -356,7 +357,7 @@ function logsig(paths::AbstractArray{T,3}, basis::BasisCache;
     _check_logsig_input(N, D, basis)
     B >= 1 || throw(ArgumentError("Batch size must be at least 1, got B=$B"))
     _check_coords(coords)
-    return _logsig_batch(paths, basis, coords, threaded, Val(D), Val(basis.m))
+    return _logsig_batch(paths, basis, coords, threaded, Val(D), Val(basis.m))::Matrix{T}
 end
 
 function _logsig_batch(paths::AbstractArray{T,3}, basis, coords, threaded,

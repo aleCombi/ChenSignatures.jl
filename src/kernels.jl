@@ -432,6 +432,7 @@ end
 # With `symmetric`, X and Y are the same batch and both sides land in X̄.
 function _gram_vjp(X, Y, wpairs, λ::Int, κ::StaticKernel, threaded::Bool, symmetric::Bool)
     T = float(promote_type(eltype(X), eltype(Y)))
+    isempty(wpairs) && return zeros(T, size(X)), zeros(T, size(Y))
     nX, nY = size(X, 1) - 1, size(Y, 1) - 1
     gx, gy = (nX << λ) + 1, (nY << λ) + 1
     chunks = _chunks(length(wpairs), threaded)

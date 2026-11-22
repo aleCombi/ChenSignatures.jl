@@ -8,7 +8,7 @@ This package efficiently computes:
 - **Signatures**: Truncated iterated integrals up to any level
 - **Log-signatures**: Compact representations using Lyndon bases
 - **Batch processing**: Multi-threaded computation of multiple paths
-- **Automatic differentiation**: Full gradient support via ChainRulesCore and Enzyme
+- **Automatic differentiation**: Zygote, Enzyme and Mooncake, through handwritten adjoints
 
 Path signatures are widely used in financial time series, Neural CDEs, stochastic analysis, and machine learning feature engineering.
 
@@ -155,7 +155,20 @@ path = randn(50, 3)
 grad = gradient(p -> sum(sig(p, 4)), path)
 ```
 
-Both `ChainRulesCore` and `Enzyme.jl` integration are provided.
+`sig`, `logsig`, `sig_kernel` and `sig_gram` have handwritten reverse passes, defined
+once as ChainRules rules. Zygote (and other ChainRules backends) use them directly;
+loading Enzyme or Mooncake activates a package extension that routes those backends to
+the same rules. All three give the same gradients and the same memory use:
+
+```julia
+using DifferentiationInterface, Enzyme, Mooncake
+
+f(p) = sum(sig(p, 4))
+DifferentiationInterface.gradient(f, AutoEnzyme(), path)
+DifferentiationInterface.gradient(f, AutoMooncake(; config=nothing), path)
+```
+
+ForwardDiff works through the generic code (no rules needed).
 
 ---
 

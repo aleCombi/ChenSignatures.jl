@@ -36,7 +36,8 @@ function ChainRulesCore.rrule(::typeof(logsig), path::AbstractMatrix{T}, basis::
     N, D = size(path)
     _check_logsig_input(N, D, basis); _check_coords(coords)
     # keep the signature: the reverse pass then skips one forward pass
-    y, sflat = _logsig_single(path, basis, coords, Val(D), Val(basis.m); keep_sig=true)
+    y, sflat = _logsig_single(path, basis, coords, Val(D), Val(basis.m);
+                              keep_sig=true)::Tuple{Vector{T},Vector{T}}
     function logsig_pullback(ȳ_raw)
         ȳ = ChainRulesCore.unthunk(ȳ_raw)
         ȳ isa ChainRulesCore.AbstractZero && return (NoTangent(), ZeroTangent(), NoTangent())
@@ -52,7 +53,8 @@ function ChainRulesCore.rrule(::typeof(logsig), paths::AbstractArray{T,3}, basis
     N, D, B = size(paths)
     _check_logsig_input(N, D, basis); _check_coords(coords)
     B >= 1 || throw(ArgumentError("Batch size must be at least 1, got B=$B"))
-    Y, Sg = _logsig_batch(paths, basis, coords, threaded, Val(D), Val(basis.m); keep_sig=true)
+    Y, Sg = _logsig_batch(paths, basis, coords, threaded, Val(D), Val(basis.m);
+                          keep_sig=true)::Tuple{Matrix{T},Matrix{T}}
     function logsig_batch_pullback(Ȳ_raw)
         Ȳ = ChainRulesCore.unthunk(Ȳ_raw)
         Ȳ isa ChainRulesCore.AbstractZero && return (NoTangent(), ZeroTangent(), NoTangent())
