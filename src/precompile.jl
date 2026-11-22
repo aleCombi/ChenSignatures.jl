@@ -23,5 +23,9 @@ using PrecompileTools: @setup_workload, @compile_workload
         k, kback = ChainRulesCore.rrule(sig_kernel, P[:, :, 1], P[:, :, 2]); kback(k)
         K, Kback = ChainRulesCore.rrule(sig_gram, P, P); Kback(K)
         K, Kback = ChainRulesCore.rrule(sig_gram, P); Kback(K)
+        κ = RBFKernel(1.0)
+        k, kback = ChainRulesCore.rrule(sig_kernel, P[:, :, 1], P[:, :, 2]; static_kernel=κ); kback(k)
+        K, Kback = ChainRulesCore.rrule(sig_gram, P, P; static_kernel=κ); Kback(K)
+        K, Kback = ChainRulesCore.rrule(sig_gram, P; static_kernel=κ); Kback(K)
     end
 end

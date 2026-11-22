@@ -31,6 +31,9 @@ matrices for kernel methods:
 ```@docs
 sig_kernel
 sig_gram
+StaticKernel
+LinearKernel
+RBFKernel
 ```
 
 ## Path Augmentations

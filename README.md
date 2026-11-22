@@ -33,6 +33,7 @@ logsig(paths, basis)              # 32 × 32
 
 sig_kernel(path, randn(80, 3))    # untruncated signature kernel (PDE)
 sig_gram(paths; dyadic_order=1)   # 32 × 32 Gram matrix, threaded
+sig_gram(paths; static_kernel=RBFKernel(0.5))
 sig_gram(paths, 4)                # truncated at level 4
 ```
 
@@ -44,7 +45,7 @@ Python bindings: [`chen-signatures`](./python).
 
 ## Future work
 
-- Static kernels (RBF, …) inside the signature kernel
+- More static kernels (Matérn, rational quadratic, polynomial)
 - Neural / rough CDEs
 - GPU kernels
 

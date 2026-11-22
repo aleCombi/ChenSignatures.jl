@@ -68,12 +68,12 @@ end
 # are built from `sig`, whose rules above apply.
 
 function ChainRulesCore.rrule(::typeof(sig_kernel), x::AbstractMatrix, y::AbstractMatrix;
-                              dyadic_order::Int=0)
-    k = sig_kernel(x, y; dyadic_order=dyadic_order)
+                              dyadic_order::Int=0, static_kernel::StaticKernel=LinearKernel())
+    k = sig_kernel(x, y; dyadic_order=dyadic_order, static_kernel=static_kernel)
     function sig_kernel_pullback(k̄_raw)
         k̄ = ChainRulesCore.unthunk(k̄_raw)
         k̄ isa ChainRulesCore.AbstractZero && return (NoTangent(), ZeroTangent(), ZeroTangent())
-        x̄, ȳ = _sig_kernel_vjp(_dense(x), _dense(y), dyadic_order, k̄)
+        x̄, ȳ = _sig_kernel_vjp(_dense(x), _dense(y), dyadic_order, static_kernel, k̄)
         return (NoTangent(), x̄, ȳ)
     end
     return k, sig_kernel_pullback
@@ -81,21 +81,25 @@ end
 
 function ChainRulesCore.rrule(::typeof(sig_gram), X::AbstractArray{<:Any,3},
                               Y::AbstractArray{<:Any,3}; dyadic_order::Int=0,
-                              threaded::Bool=true)
-    K = sig_gram(X, Y; dyadic_order=dyadic_order, threaded=threaded)
+                              static_kernel::StaticKernel=LinearKernel(), threaded::Bool=true)
+    K = sig_gram(X, Y; dyadic_order=dyadic_order, static_kernel=static_kernel,
+                 threaded=threaded)
     function sig_gram_pullback(K̄_raw)
         K̄ = ChainRulesCore.unthunk(K̄_raw)
         K̄ isa ChainRulesCore.AbstractZero && return (NoTangent(), ZeroTangent(), ZeroTangent())
         wpairs = [(a, b, K̄[a, b]) for a in axes(K̄, 1), b in axes(K̄, 2) if !iszero(K̄[a, b])]
-        X̄, Ȳ = _gram_vjp(_dense(X), _dense(Y), wpairs, dyadic_order, threaded, false)
+        X̄, Ȳ = _gram_vjp(_dense(X), _dense(Y), wpairs, dyadic_order, static_kernel,
+                           threaded, false)
         return (NoTangent(), X̄, Ȳ)
     end
     return K, sig_gram_pullback
 end
 
 function ChainRulesCore.rrule(::typeof(sig_gram), X::AbstractArray{<:Any,3};
-                              dyadic_order::Int=0, threaded::Bool=true)
-    K = sig_gram(X; dyadic_order=dyadic_order, threaded=threaded)
+                              dyadic_order::Int=0, static_kernel::StaticKernel=LinearKernel(),
+                              threaded::Bool=true)
+    K = sig_gram(X; dyadic_order=dyadic_order, static_kernel=static_kernel,
+                 threaded=threaded)
     function sig_gram_sym_pullback(K̄_raw)
         K̄ = ChainRulesCore.unthunk(K̄_raw)
         K̄ isa ChainRulesCore.AbstractZero && return (NoTangent(), ZeroTangent())
@@ -103,7 +107,8 @@ function ChainRulesCore.rrule(::typeof(sig_gram), X::AbstractArray{<:Any,3};
         # K[a,b] = K[b,a] is one value: its cotangent is K̄[a,b] + K̄[b,a]
         wpairs = [(a, b, a == b ? K̄[a, a] : K̄[a, b] + K̄[b, a]) for b in 1:B for a in 1:b]
         filter!(t -> !iszero(t[3]), wpairs)
-        X̄, _ = _gram_vjp(_dense(X), _dense(X), wpairs, dyadic_order, threaded, true)
+        X̄, _ = _gram_vjp(_dense(X), _dense(X), wpairs, dyadic_order, static_kernel,
+                          threaded, true)
         return (NoTangent(), X̄)
     end
     return K, sig_gram_sym_pullback

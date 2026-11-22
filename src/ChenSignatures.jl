@@ -35,6 +35,7 @@ export lead_lag     # Lead–lag transform (2N-1, 2D)
 export sig_time, sig_leadlag
 export logsig_time, logsig_leadlag
 export sig_kernel, sig_gram  # Signature kernels (PDE and truncated) and Gram matrices
+export StaticKernel, LinearKernel, RBFKernel  # Static kernels lifted into sig_kernel
 #
 # Core types and lower-level API:
 export Tensor              # Dense tensor algebra representation

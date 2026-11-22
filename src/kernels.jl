@@ -3,14 +3,18 @@
 # Truncated: the inner product of truncated signatures (level 0 included).
 # Untruncated: the Goursat PDE of Salvi et al. (2021),
 #     ∂²K/∂s∂t = ⟨ẋ(s), ẏ(t)⟩ K,   K(0, ·) = K(·, 0) = 1,   k(x, y) = K(1, 1),
+# optionally with a static kernel κ on points in place of ⟨·,·⟩,
 # solved with their explicit second-order scheme on the grid of path points,
 # each increment split into 2^λ equal pieces (λ = dyadic_order):
 #     K[i+1,j+1] = (K[i+1,j] + K[i,j+1]) A − K[i,j] B,
-#     A = 1 + c/2 + c²/12,   B = 1 − c²/12,   c = ⟨Δx_p, Δy_q⟩ / 4^λ.
+#     A = 1 + c/2 + c²/12,   B = 1 − c²/12,   c = G[p, q] / 4^λ,
+# where G[p, q] = ⟨Δx_p, Δy_q⟩ for the linear static kernel, and in general the
+# second difference of κ over the cell's corners,
+#     G[p, q] = κ(x_{p+1}, y_{q+1}) − κ(x_{p+1}, y_q) − κ(x_p, y_{q+1}) + κ(x_p, y_q).
 # The gradient is the adjoint of that recurrence (backward over the grid).
 
 # ---------------------------------------------------------------------------
-# PDE solver on one pair, given G[p, q] = ⟨Δx_p, Δy_q⟩
+# PDE solver on one pair, given the cell coefficients G
 # ---------------------------------------------------------------------------
 
 @inline function _pde_coeffs(c)
@@ -90,6 +94,136 @@ function _pde_adjoint!(Ḡ::AbstractMatrix{T}, K::AbstractMatrix{T}, K̄::Abstra
 end
 
 # ---------------------------------------------------------------------------
+# Static kernels: the cell coefficients G and their adjoint
+# ---------------------------------------------------------------------------
+
+"""
+    StaticKernel
+
+A kernel ``κ(a, b)`` on points of ``ℝ^d``, lifted into the signature kernel through
+the `static_kernel` keyword of [`sig_kernel`](@ref) and [`sig_gram`](@ref). Provided:
+[`LinearKernel`](@ref) (the plain signature kernel) and [`RBFKernel`](@ref).
+"""
+abstract type StaticKernel end
+
+"""
+    LinearKernel()
+
+``κ(a, b) = ⟨a, b⟩``: the signature kernel of the paths themselves. The default.
+"""
+struct LinearKernel <: StaticKernel end
+
+# Kernels that depend on the points only through d² = |a − b|²: they define
+# `_kfun(κ, d²)` and `_kderiv(κ, d², value)` = dκ/d(d²), and share the code below.
+abstract type _DistanceKernel <: StaticKernel end
+
+"""
+    RBFKernel(σ)
+
+``κ(a, b) = \\exp(-|a - b|^2 / 2σ^2)``: the signature kernel of the paths lifted into
+the RBF feature space. `σ` sets the length scale on the scale of the path values.
+"""
+struct RBFKernel{T<:Real} <: _DistanceKernel
+    sigma::T
+    function RBFKernel(σ::Real)
+        σ > 0 || throw(ArgumentError("RBFKernel: σ must be positive, got $σ"))
+        return new{typeof(σ)}(σ)
+    end
+end
+
+@inline _kfun(κ::RBFKernel, d2) = Base.exp(-d2 / (2 * κ.sigma^2))
+@inline _kderiv(κ::RBFKernel, d2, v) = -v / (2 * κ.sigma^2)
+
+# What a path contributes to the cell coefficients: its increments for the linear
+# kernel (G = ΔX ΔYᵀ is exact, with no cancellation between large point values),
+# its points otherwise.
+_cell_source(X, ::LinearKernel) = _increments(X)
+_cell_source(X, ::StaticKernel) = X
+
+# One pair: G = cell coefficients, (N-1) × (M-1).
+_cells(x, y, ::LinearKernel) = _increments(x) * transpose(_increments(y))
+
+function _kernel_points(x, y, κ::_DistanceKernel)
+    T = float(promote_type(eltype(x), eltype(y)))
+    P = Matrix{T}(undef, size(x, 1), size(y, 1))
+    @inbounds for q in axes(y, 1), p in axes(x, 1)
+        d2 = zero(T)
+        for k in axes(x, 2)
+            d2 += (x[p, k] - y[q, k])^2
+        end
+        P[p, q] = _kfun(κ, d2)
+    end
+    return P
+end
+
+_second_difference(P) = P[2:end, 2:end] .- P[2:end, 1:end-1] .- P[1:end-1, 2:end] .+ P[1:end-1, 1:end-1]
+
+_cells(x, y, κ::_DistanceKernel) = _second_difference(_kernel_points(x, y, κ))
+
+# One pair: accumulate the point cotangents x̄ += ∂(Ḡ·G)/∂x and ȳ += ∂(Ḡ·G)/∂y.
+function _cells_adjoint!(x̄, ȳ, Ḡ, x, y, ::LinearKernel)
+    dx = _increments(x); dy = _increments(y)
+    x̄ .+= _path_cotangent(Ḡ * dy)
+    ȳ .+= _path_cotangent(transpose(Ḡ) * dx)
+    return nothing
+end
+
+function _cells_adjoint!(x̄, ȳ, Ḡ, x, y, κ::_DistanceKernel)
+    T = eltype(Ḡ)
+    N, M = size(x, 1), size(y, 1)
+    # adjoint of the second difference
+    P̄ = zeros(T, N, M)
+    P̄[2:end, 2:end]     .+= Ḡ
+    P̄[2:end, 1:end-1]   .-= Ḡ
+    P̄[1:end-1, 2:end]   .-= Ḡ
+    P̄[1:end-1, 1:end-1] .+= Ḡ
+    # ∂κ(a, b)/∂a = 2 κ'(d²) (a − b), with W = −2 P̄ κ'(d²)
+    W = similar(P̄)
+    @inbounds for q in 1:M, p in 1:N
+        d2 = zero(T)
+        for k in axes(x, 2)
+            d2 += (x[p, k] - y[q, k])^2
+        end
+        W[p, q] = -2 * P̄[p, q] * _kderiv(κ, d2, _kfun(κ, d2))
+    end
+    x̄ .+= W * y .- sum(W; dims=2) .* x
+    ȳ .+= transpose(W) * x .- transpose(sum(W; dims=1)) .* y
+    return nothing
+end
+
+# A lane group: Gt[l + (q-1)L, p] = G[p, q] of the pair (x_a, y_{b_l}), with ycat
+# holding the lanes' y sources lane-major and xa the x source.
+function _lane_cells!(Gt, scratch, ycat, xa, L::Int, ::LinearKernel)
+    LinearAlgebra.mul!(Gt, ycat, transpose(xa))
+    return Gt
+end
+
+function _lane_cells!(Gt, P, ycat, xa, L::Int, κ::_DistanceKernel)
+    T = eltype(Gt)
+    R, D = size(ycat)              # R = L * M
+    @inbounds for p in axes(xa, 1)
+        for r in 1:R
+            d2 = zero(T)
+            for k in 1:D
+                d2 += (ycat[r, k] - xa[p, k])^2
+            end
+            P[r, p] = _kfun(κ, d2)
+        end
+    end
+    nq = R ÷ L - 1
+    @inbounds for p in 1:size(xa, 1)-1
+        @simd for r in 1:L*nq      # r = l + (q-1)L, so r + L is (l, q+1)
+            Gt[r, p] = P[r+L, p+1] - P[r, p+1] - P[r+L, p] + P[r, p]
+        end
+    end
+    return Gt
+end
+
+_lane_scratch(::Type{T}, ycat, xa, ::LinearKernel) where {T} = nothing
+_lane_scratch(::Type{T}, ycat, xa, ::StaticKernel) where {T} =
+    Matrix{T}(undef, size(ycat, 1), size(xa, 1))
+
+# ---------------------------------------------------------------------------
 # Increments and their cotangents
 # ---------------------------------------------------------------------------
 
@@ -123,7 +257,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    sig_kernel(x, y; dyadic_order=0) -> Real
+    sig_kernel(x, y; dyadic_order=0, static_kernel=LinearKernel()) -> Real
     sig_kernel(x, y, m) -> Real
 
 Signature kernel ``k(x, y) = ⟨S(x), S(y)⟩`` of two piecewise-linear paths, given as
@@ -133,6 +267,8 @@ Signature kernel ``k(x, y) = ⟨S(x), S(y)⟩`` of two piecewise-linear paths, g
   ``∂²K/∂s∂t = ⟨ẋ, ẏ⟩ K`` (Salvi et al., 2021) with a second-order explicit scheme.
   Each path increment is split into `2^dyadic_order` pieces; raise it to refine.
   Cost `O(N M d + N M 4^dyadic_order)`, independent of any truncation level.
+  `static_kernel` replaces ``⟨·,·⟩`` by a kernel on points, e.g. [`RBFKernel`](@ref);
+  each grid cell then carries the second difference of ``κ`` over its corners.
 - With `m`: the kernel of signatures truncated at level `m`, `1 + dot(sig(x, m), sig(y, m))`.
 
 Both are differentiable (ChainRules) in `x` and `y`.
@@ -141,13 +277,14 @@ Both are differentiable (ChainRules) in `x` and `y`.
 ```julia
 x, y = randn(50, 3), randn(40, 3)
 sig_kernel(x, y; dyadic_order=1)
+sig_kernel(x, y; static_kernel=RBFKernel(0.5))
 sig_kernel(x, y, 6)
 ```
 """
-function sig_kernel(x::AbstractMatrix, y::AbstractMatrix; dyadic_order::Int=0)
+function sig_kernel(x::AbstractMatrix, y::AbstractMatrix; dyadic_order::Int=0,
+                    static_kernel::StaticKernel=LinearKernel())
     _check_kernel_args(size(x, 2), size(y, 2), dyadic_order)
-    G = _increments(x) * transpose(_increments(y))
-    return _pde_value(G, dyadic_order)
+    return _pde_value(_cells(x, y, static_kernel), dyadic_order)
 end
 
 function sig_kernel(x::AbstractMatrix, y::AbstractMatrix, m::Int)
@@ -156,8 +293,8 @@ function sig_kernel(x::AbstractMatrix, y::AbstractMatrix, m::Int)
 end
 
 """
-    sig_gram(X, Y; dyadic_order=0, threaded=true) -> Matrix
-    sig_gram(X; dyadic_order=0, threaded=true) -> Matrix
+    sig_gram(X, Y; dyadic_order=0, static_kernel=LinearKernel(), threaded=true) -> Matrix
+    sig_gram(X; dyadic_order=0, static_kernel=LinearKernel(), threaded=true) -> Matrix
     sig_gram(X, Y, m; threaded=true) -> Matrix
     sig_gram(X, m; threaded=true) -> Matrix
 
@@ -171,17 +308,19 @@ pairs spread over threads. With `m` it is `1 .+ sig(X, m)' * sig(Y, m)`.
 Differentiable (ChainRules) in `X` and `Y`.
 """
 function sig_gram(X::AbstractArray{<:Any,3}, Y::AbstractArray{<:Any,3};
-                  dyadic_order::Int=0, threaded::Bool=true)
+                  dyadic_order::Int=0, static_kernel::StaticKernel=LinearKernel(),
+                  threaded::Bool=true)
     _check_kernel_args(size(X, 2), size(Y, 2), dyadic_order)
     groups = _lane_groups(axes(X, 3), a -> axes(Y, 3))
-    return _gram_forward(X, Y, groups, dyadic_order, threaded, false)
+    return _gram_forward(X, Y, groups, dyadic_order, static_kernel, threaded, false)
 end
 
-function sig_gram(X::AbstractArray{<:Any,3}; dyadic_order::Int=0, threaded::Bool=true)
+function sig_gram(X::AbstractArray{<:Any,3}; dyadic_order::Int=0,
+                  static_kernel::StaticKernel=LinearKernel(), threaded::Bool=true)
     _check_kernel_args(size(X, 2), size(X, 2), dyadic_order)
     B = size(X, 3)
     groups = _lane_groups(1:B, a -> a:B)
-    return _gram_forward(X, X, groups, dyadic_order, threaded, true)
+    return _gram_forward(X, X, groups, dyadic_order, static_kernel, threaded, true)
 end
 
 function sig_gram(X::AbstractArray{<:Any,3}, Y::AbstractArray{<:Any,3}, m::Int;
@@ -208,8 +347,8 @@ end
 
 # Pairs are solved _GRAM_LANES at a time, side by side: each grid row is a serial
 # chain, so one pair alone is latency-bound, while independent pairs fill the SIMD
-# lanes. A group shares its x path, so the inner products of all its pairs are one
-# matrix product, landing lane-major (lane index first).
+# lanes. A group shares its x path, so the cell coefficients of all its pairs come
+# from one pass over x (a matrix product for the linear kernel), landing lane-major.
 const _GRAM_LANES = 16
 
 # Groups (a, bs) with length(bs) <= _GRAM_LANES, covering the pairs (a, b ∈ cols(a)).
@@ -221,27 +360,29 @@ function _lane_groups(rows, cols)
     return groups
 end
 
-function _gram_forward(X, Y, groups, λ::Int, threaded::Bool, symmetric::Bool)
+function _gram_forward(X, Y, groups, λ::Int, κ::StaticKernel, threaded::Bool,
+                       symmetric::Bool)
     T = float(promote_type(eltype(X), eltype(Y)))
-    dX = _increments(X); dY = symmetric ? dX : _increments(Y)
+    sX = _cell_source(X, κ); sY = symmetric ? sX : _cell_source(Y, κ)
     Kout = Matrix{T}(undef, size(X, 3), size(Y, 3))
-    nX, nY, D = size(dX, 1), size(dY, 1), size(dX, 2)
+    nX, nY = size(X, 1) - 1, size(Y, 1) - 1      # cells along x and y
+    mY, D = size(sY, 1), size(sY, 2)
     L = _GRAM_LANES
     tasks = map(_chunks(length(groups), threaded)) do r
         Threads.@spawn begin
-            local ycat = Matrix{T}(undef, L * nY, D)
+            local ycat = Matrix{T}(undef, L * mY, D)
             local Gt = Matrix{T}(undef, L * nY, nX)
+            local scratch = _lane_scratch(T, ycat, view(sX, :, :, 1), κ)
             local prev = Matrix{T}(undef, L, (nY << λ) + 1)
             local cur = similar(prev)
             local out = Vector{T}(undef, L)
             for g in r
                 a, bs = groups[g]
-                # ycat[l + (q-1)L, k] = Δy_q[k] of lane l; a short group repeats its last path
-                @inbounds for k in 1:D, q in 1:nY, l in 1:L
-                    ycat[l + (q - 1) * L, k] = dY[q, k, bs[min(l, length(bs))]]
+                # ycat[l + (q-1)L, k] = source row q of lane l; a short group repeats its last path
+                @inbounds for k in 1:D, q in 1:mY, l in 1:L
+                    ycat[l + (q - 1) * L, k] = sY[q, k, bs[min(l, length(bs))]]
                 end
-                # Gt[l + (q-1)L, p] = ⟨Δx_p, Δy_q⟩ for lane l
-                LinearAlgebra.mul!(Gt, ycat, transpose(view(dX, :, :, a)))
+                _lane_cells!(Gt, scratch, ycat, view(sX, :, :, a), L, κ)
                 # the scheme is symmetric in (x, y): sweep y along the inner loop
                 _pde_value_lanes!(out, prev, cur, reshape(Gt, L, nY, nX), λ)
                 for (l, b) in enumerate(bs)
@@ -277,49 +418,54 @@ function _pde_value_lanes!(out, prev::AbstractMatrix{T}, cur::AbstractMatrix{T},
     return out
 end
 
-# Weighted pairs (a, b, w): accumulate w · ∂k(a, b) into the increment cotangents.
-# With `symmetric`, X and Y are the same batch and both sides land in dX̄.
-function _gram_vjp(X, Y, wpairs, λ::Int, threaded::Bool, symmetric::Bool)
+# Ḡ for one pair with output cotangent w.
+function _pair_cell_cotangent!(Ḡ, K, K̄, G, λ::Int, w)
+    gx, gy = (size(G, 1) << λ) + 1, (size(G, 2) << λ) + 1
+    Kv = view(K, 1:gx, 1:gy); K̄v = view(K̄, 1:gx, 1:gy)
+    _pde_grid!(Kv, G, λ)
+    fill!(Ḡ, zero(eltype(Ḡ)))
+    _pde_adjoint!(Ḡ, Kv, K̄v, G, λ, w)
+    return Ḡ
+end
+
+# Weighted pairs (a, b, w): accumulate w · ∂k(a, b) into the path cotangents.
+# With `symmetric`, X and Y are the same batch and both sides land in X̄.
+function _gram_vjp(X, Y, wpairs, λ::Int, κ::StaticKernel, threaded::Bool, symmetric::Bool)
     T = float(promote_type(eltype(X), eltype(Y)))
-    dX = _increments(X); dY = symmetric ? dX : _increments(Y)
-    nX, nY = size(dX, 1), size(dY, 1)
+    nX, nY = size(X, 1) - 1, size(Y, 1) - 1
     gx, gy = (nX << λ) + 1, (nY << λ) + 1
     chunks = _chunks(length(wpairs), threaded)
     results = Vector{Any}(undef, length(chunks))
     tasks = map(enumerate(chunks)) do (c, r)
         Threads.@spawn begin
-            local dX̄ = zeros(T, size(dX))
-            local dȲ = symmetric ? dX̄ : zeros(T, size(dY))
-            local G = Matrix{T}(undef, nX, nY)
+            local X̄ = zeros(T, size(X))
+            local Ȳ = symmetric ? X̄ : zeros(T, size(Y))
             local Ḡ = Matrix{T}(undef, nX, nY)
             local K = Matrix{T}(undef, gx, gy)
             local K̄ = Matrix{T}(undef, gx, gy)
             for t in r
                 a, b, w = wpairs[t]
-                xa = view(dX, :, :, a); yb = view(dY, :, :, b)
-                LinearAlgebra.mul!(G, xa, transpose(yb))
-                _pde_grid!(K, G, λ)
-                fill!(Ḡ, zero(T))
-                _pde_adjoint!(Ḡ, K, K̄, G, λ, w)
-                LinearAlgebra.mul!(view(dX̄, :, :, a), Ḡ, yb, one(T), one(T))
-                LinearAlgebra.mul!(view(dȲ, :, :, b), transpose(Ḡ), xa, one(T), one(T))
+                xa = view(X, :, :, a); yb = view(Y, :, :, b)
+                G = _cells(xa, yb, κ)
+                _pair_cell_cotangent!(Ḡ, K, K̄, G, λ, w)
+                _cells_adjoint!(view(X̄, :, :, a), view(Ȳ, :, :, b), Ḡ, xa, yb, κ)
             end
-            results[c] = (dX̄, dȲ)
+            results[c] = (X̄, Ȳ)
         end
     end
     foreach(wait, tasks)
-    dX̄ = reduce(+, first.(results))
-    X̄ = _path_cotangent(dX̄)
+    X̄ = reduce(+, first.(results))
     symmetric && return X̄, X̄
-    return X̄, _path_cotangent(reduce(+, last.(results)))
+    return X̄, reduce(+, last.(results))
 end
 
-function _sig_kernel_vjp(x, y, λ::Int, k̄)
+function _sig_kernel_vjp(x, y, λ::Int, κ::StaticKernel, k̄)
     T = float(promote_type(eltype(x), eltype(y)))
-    dx = _increments(x); dy = _increments(y)
-    G = dx * transpose(dy)
+    G = _cells(x, y, κ)
     gx, gy = (size(G, 1) << λ) + 1, (size(G, 2) << λ) + 1
-    K = _pde_grid!(Matrix{T}(undef, gx, gy), G, λ)
-    Ḡ = _pde_adjoint!(zeros(T, size(G)), K, similar(K), G, λ, k̄)
-    return _path_cotangent(Ḡ * dy), _path_cotangent(transpose(Ḡ) * dx)
+    Ḡ = _pair_cell_cotangent!(similar(G, T), Matrix{T}(undef, gx, gy),
+                              Matrix{T}(undef, gx, gy), G, λ, k̄)
+    x̄ = zeros(T, size(x)); ȳ = zeros(T, size(y))
+    _cells_adjoint!(x̄, ȳ, Ḡ, x, y, κ)
+    return x̄, ȳ
 end

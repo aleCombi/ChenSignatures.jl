@@ -185,6 +185,21 @@ K_{i+1,j+1} = (K_{i+1,j} + K_{i,j+1}) \Big(1 + \frac{c}{2} + \frac{c^2}{12}\Big)
 The error falls by about 4 per refinement. The cost is ``O(N M d)`` for the inner
 products plus ``O(N M 4^\lambda)`` for the grid, independent of any truncation level.
 
+**Static kernels.** With a kernel ``\kappa`` on points in place of the dot product
+(`static_kernel`, e.g. [`RBFKernel`](@ref)), the PDE is that of the paths lifted into
+the feature space of ``\kappa``, and a cell carries the second difference of ``\kappa``
+over its corners,
+
+```math
+c = \kappa(x_{p+1}, y_{q+1}) - \kappa(x_{p+1}, y_q) - \kappa(x_p, y_{q+1}) + \kappa(x_p, y_q),
+```
+
+which for ``\kappa(a, b) = \langle a, b \rangle`` is ``\langle \Delta x_p, \Delta y_q \rangle``
+again (that case is computed from the increments directly, which avoids cancellation
+between large point values). Under refinement a sub-cell carries ``c / 4^\lambda``,
+as in sigkernel and pySigLib. The gradient adds the chain rule through ``\kappa``:
+for a kernel of ``d^2 = |a - b|^2``, ``\partial \kappa / \partial a = 2 \kappa'(d^2) (a - b)``.
+
 **Gram matrices.** Along a grid row each cell needs the one before it, a serial chain
 that leaves the CPU waiting on latency. [`sig_gram`](@ref) therefore solves 16 pairs
 side by side, one per SIMD lane. A group shares its ``x`` path, so the inner products of

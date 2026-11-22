@@ -66,9 +66,46 @@ using Test
         @test Zygote.gradient(ft, X)[1] ≈ ForwardDiff.gradient(ft, X) rtol=1e-10
     end
 
+    @testset "RBF static kernel" begin
+        x, y = walk(9, 2), walk(6, 2)
+        κ = RBFKernel(0.7)
+        k = sig_kernel(x, y; static_kernel=κ)
+        @test sig_kernel(x .+ 3.0, y .+ 3.0; static_kernel=κ) ≈ k     # translation invariant
+        # large σ: second differences of κ tend to ⟨Δx, Δy⟩ / σ²
+        σ = 1e3
+        k_rbf = sig_kernel(x, y; static_kernel=RBFKernel(σ), dyadic_order=1)
+        k_lin = sig_kernel(x ./ σ, y ./ σ; dyadic_order=1)
+        @test (k_rbf - 1) ≈ (k_lin - 1) rtol=1e-4
+        @test_throws ArgumentError RBFKernel(0.0)
+        @test sig_kernel(x, y; static_kernel=LinearKernel()) == sig_kernel(x, y)
+    end
+
+    @testset "RBF Gram equals pairwise, gradients match ForwardDiff (threaded=$thr)" for thr in (true, false)
+        κ = RBFKernel(0.5)
+        X, Y = walk(7, 2, 5), walk(6, 2, 3)
+        @test sig_gram(X, Y; static_kernel=κ, dyadic_order=1, threaded=thr) ≈
+              [sig_kernel(X[:, :, a], Y[:, :, b]; static_kernel=κ, dyadic_order=1)
+               for a in 1:5, b in 1:3]
+        @test sig_gram(X; static_kernel=κ, threaded=thr) ≈ sig_gram(X, X; static_kernel=κ)
+
+        x, y = X[:, :, 1], Y[:, :, 1]
+        gx, gy = Zygote.gradient((a, b) -> sig_kernel(a, b; static_kernel=κ, dyadic_order=1), x, y)
+        @test gx ≈ ForwardDiff.gradient(a -> sig_kernel(a, y; static_kernel=κ, dyadic_order=1), x) rtol=1e-10
+        @test gy ≈ ForwardDiff.gradient(b -> sig_kernel(x, b; static_kernel=κ, dyadic_order=1), y) rtol=1e-10
+
+        W, Ws = randn(5, 3), randn(5, 5)
+        f(A, B) = sum(sig_gram(A, B; static_kernel=κ, threaded=thr) .* W)
+        gX, gY = Zygote.gradient(f, X, Y)
+        @test gX ≈ ForwardDiff.gradient(A -> f(A, Y), X) rtol=1e-10
+        @test gY ≈ ForwardDiff.gradient(B -> f(X, B), Y) rtol=1e-10
+        fs(A) = sum(sig_gram(A; static_kernel=κ, dyadic_order=1, threaded=thr) .* Ws)
+        @test Zygote.gradient(fs, X)[1] ≈ ForwardDiff.gradient(fs, X) rtol=1e-10
+    end
+
     @testset "kernel ridge on a Gram matrix" begin
         X = walk(12, 2, 30)
         K = sig_gram(X; dyadic_order=1)
         @test isposdef(Symmetric(K + 1e-8I))
+        @test isposdef(Symmetric(sig_gram(X; static_kernel=RBFKernel(0.5)) + 1e-8I))
     end
 end
