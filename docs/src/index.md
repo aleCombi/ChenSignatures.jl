@@ -170,6 +170,36 @@ DifferentiationInterface.gradient(f, AutoMooncake(; config=nothing), path)
 
 ForwardDiff works through the generic code (no rules needed).
 
+## GPU
+
+Loading a GPU package (CUDA.jl, AMDGPU.jl, ...) activates a KernelAbstractions
+extension: `sig_gram` on GPU arrays runs the PDE signature kernel on the device, one
+workgroup per pair of paths, and its gradient runs a handwritten adjoint kernel.
+
+```julia
+using CUDA, ChenSignatures, Zygote
+
+X = CuArray(randn(Float32, 128, 3, 64))     # N × d × batch, on the GPU
+Y = CuArray(randn(Float32, 128, 3, 64))
+K = sig_gram(X, Y)                           # 64 × 64 CuArray
+sig_gram(X; dyadic_order = 1)
+
+W = CUDA.randn(Float32, 64, 64)
+gX, gY = Zygote.gradient((x, y) -> sum(W .* sig_gram(x, y)), X, Y)
+```
+
+The rule is the same ChainRules rule as on the CPU, so Zygote, Enzyme and Mooncake all
+use it. (Enzyme needs `set_runtime_activity(Reverse)` for CuArray broadcasts in the
+surrounding loss, not for the kernel.)
+
+Limits: the linear static kernel only (other static kernels raise an error); the
+shorter path may have at most 1023 increments after dyadic refinement; the gradient
+stores the PDE grid, `(n+1)(m+1)` values per pair.
+
+On an RTX 2060 (Float32, d = 3), the gradient of `sum(W .* sig_gram(X, Y))` takes
+6 ms for 4096 pairs of length 64 and 21 ms for 1024 pairs of length 256: 6–14× faster
+than pySigLib's CUDA backend. See `benchmark/gpu`.
+
 ---
 
 ## Links
