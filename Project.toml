@@ -11,15 +11,21 @@ StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [weakdeps]
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+GPUArraysCore = "46192b85-c4d5-4398-a991-12ede77f4527"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 
 [extensions]
 ChenSignaturesEnzymeExt = "Enzyme"
+ChenSignaturesGPUMooncakeExt = ["Mooncake", "KernelAbstractions", "GPUArraysCore"]
+ChenSignaturesKernelAbstractionsExt = ["KernelAbstractions", "GPUArraysCore"]
 ChenSignaturesMooncakeExt = "Mooncake"
 
 [compat]
 ChainRulesCore = "1.26.0"
 Enzyme = "0.13"
+GPUArraysCore = "0.1, 0.2"
+KernelAbstractions = "0.9"
 Mooncake = "0.5"
 LinearAlgebra = "1.10"
 PrecompileTools = "1"

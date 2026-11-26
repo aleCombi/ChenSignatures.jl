@@ -43,13 +43,21 @@ shortcuts), `rolling_sig` for sliding windows, and word labels (`sig_words`,
 and Mooncake, all running the same handwritten adjoints. See the
 [docs](https://aleCombi.github.io/ChenSignatures.jl).
 
+`sig_gram` also runs on GPU arrays (CUDA.jl, AMDGPU.jl, ...) through a
+KernelAbstractions extension, with a handwritten adjoint kernel for the gradient:
+
+```julia
+using CUDA
+K = sig_gram(CuArray(paths))      # 32 × 32 CuArray
+```
+
 Python bindings: [`chen-signatures`](./python).
 
 ## Future work
 
 - More static kernels (Matérn, rational quadratic, polynomial)
 - Neural / rough CDEs
-- GPU kernels
+- GPU: static kernels other than linear, `sig`/`logsig` on GPU
 
 ## Citation
 
