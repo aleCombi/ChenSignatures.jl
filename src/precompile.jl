@@ -27,5 +27,7 @@ using PrecompileTools: @setup_workload, @compile_workload
         k, kback = ChainRulesCore.rrule(sig_kernel, P[:, :, 1], P[:, :, 2]; static_kernel=κ); kback(k)
         K, Kback = ChainRulesCore.rrule(sig_gram, P, P; static_kernel=κ); Kback(K)
         K, Kback = ChainRulesCore.rrule(sig_gram, P; static_kernel=κ); Kback(K)
+        # the Python package's entry points, Float32 and Float64
+        PyAPI._workload(shapes)
     end
 end

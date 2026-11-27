@@ -18,4 +18,5 @@ using ChenSignatures
     include("test_ad_backends.jl")
     include("test_augmentations.jl")
     include("test_gpu_ka.jl")
+    include("test_python_api.jl")
 end

@@ -21,8 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "juliapkg>=0.1.10",
-    "juliacall>=0.9.20",
+    "juliapkg>=0.1.27",
     "numpy>=1.20.0",
 ]
 
@@ -49,7 +48,7 @@ where = ["."]
 include = ["chen*"]
 
 [tool.setuptools.package-data]
-chen = ["juliapkg.json"]
+chen = ["juliapkg.json", "gpu.jl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

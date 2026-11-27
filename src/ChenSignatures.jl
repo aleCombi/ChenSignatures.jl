@@ -18,6 +18,7 @@ include("kernels.jl")
 
 using ChainRulesCore
 include("chain_rules.jl")
+include("python_api.jl")
 include("precompile.jl")
 
 # ============================================================================

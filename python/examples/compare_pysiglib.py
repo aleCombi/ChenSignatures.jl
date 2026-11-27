@@ -23,13 +23,13 @@ Usage:
   JULIA_NUM_THREADS=16 python compare_pysiglib.py           (Linux/Mac)
 
 Note: By default, if JULIA_NUM_THREADS is not set, the script attempts to set it
-to the CPU count, but this only works if juliacall hasn't been initialized yet.
+to the CPU count, but this only works before chen's first computation starts Julia.
 For reliable thread control, always set JULIA_NUM_THREADS before running Python.
 """
 
 import os
 
-# Set JULIA_NUM_THREADS before importing chen (Julia initialization happens on import)
+# Set JULIA_NUM_THREADS before chen's first computation (that is when Julia starts)
 # This can be controlled via environment variable or defaults to CPU count
 if "JULIA_NUM_THREADS" not in os.environ:
     import multiprocessing
@@ -50,8 +50,8 @@ except ImportError:
 
 def get_julia_thread_count() -> int:
     """Get the number of threads Julia is using."""
-    from juliacall import Main as jl
-    return int(jl.Threads.nthreads())
+    from chen._julia import api
+    return int(api().nthreads())
 
 
 def generate_paths_chen(B: int, L: int, d: int, dtype=np.float64) -> np.ndarray:

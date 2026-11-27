@@ -1,364 +1,323 @@
 # python/chen/__init__.py
 """
-chen-signatures: Fast path signatures powered by Julia
+chen-signatures: fast path signatures and signature kernels, powered by Julia.
+
+NumPy layout (as in the Julia package): a path is (N, d), a batch is (N, d, B).
+`chen.torch` has the PyTorch versions (batch-first, autograd, CUDA).
+
+`import chen` is instant: Julia starts on the first computation.
 """
-from pathlib import Path
+from dataclasses import dataclass
+
 import numpy as np
 
-# Import version from our dual-mode version handler
 from chen._version import __version__
+import ctypes as _ct
 
-def _setup_julia_package():
-    """
-    Configure ChenSignatures Julia package based on environment.
-    
-    - Development mode: Use local package via path
-    - Installed mode: Use General Registry with version matching Python package
-    
-    Returns:
-        bool: True if in development mode, False if in production mode
-    """
-    import juliapkg
-    
-    this_file = Path(__file__).resolve()
-    python_root = this_file.parent          # python/chen/
-    repo_root = python_root.parents[1]      # repo root/
-    
-    # 1. DEVELOPMENT MODE
-    # If the Julia Project.toml exists in the root, link it directly.
-    if (repo_root / "Project.toml").exists():
-        juliapkg.add(
-            "ChenSignatures",
-            uuid="4efb4129-5e83-47d2-926d-947c0e6cb76d",
-            path=str(repo_root),
-            dev=True
-        )
-        return True
+from chen._julia import api as _api, install_gpu, new_handle as _new_handle, JuliaError
 
-    # 2. INSTALLED / PRODUCTION MODE
-    # Use version from __version__ (which came from package metadata or Project.toml)
-    juliapkg.add(
-        "ChenSignatures",
-        uuid="4efb4129-5e83-47d2-926d-947c0e6cb76d",
-        version=f"={__version__}"
-    )
-    return False
+# ============================================================================
+# Helpers
+# ============================================================================
 
-# Setup Julia package before importing juliacall
-_is_dev = _setup_julia_package()
 
-# Import juliacall - this will use juliapkg to set up the Julia environment
-from juliacall import Main as jl
+def _as_path(path, ndims=(2, 3), name="path"):
+    """Float32/float64, column-major (Julia layout), and the precision code."""
+    arr = np.asarray(path)
+    if arr.dtype not in (np.float32, np.float64):
+        arr = arr.astype(np.float64)
+    if arr.ndim not in ndims:
+        want = " or ".join({2: "2D (N, d)", 3: "3D (N, d, B)"}[k] for k in ndims)
+        raise ValueError(f"`{name}` must be {want}; got shape {arr.shape}")
+    if arr.shape[0] < 2:
+        raise ValueError(f"`{name}` needs at least 2 points, got N={arr.shape[0]}")
+    arr = np.asfortranarray(arr)
+    return arr, (32 if arr.dtype == np.float32 else 64)
 
-# Load ChenSignatures (juliapkg already added it to the environment)
-jl.seval("using ChenSignatures")
+
+def _check_level(m):
+    m = int(m)
+    if m < 1:
+        raise ValueError(f"truncation level m must be at least 1, got {m}")
+    return m
+
+
+def sig_length(d: int, m: int) -> int:
+    """Length of the truncated signature: d + d^2 + ... + d^m."""
+    return sum(d**k for k in range(1, m + 1))
 
 
 # ============================================================================
-# Public API
+# Signatures
 # ============================================================================
+
 
 def sig(path, m: int, threaded: bool = True) -> np.ndarray:
     """
-    Compute the truncated signature of a path or batch of paths up to level m.
+    Truncated signature of a path or a batch of paths, levels 1..m.
 
     Args:
-        path: Array-like input of shape:
-            - (N, d): Single path where N is path length, d is dimension
-            - (N, d, B): Batch of B paths (uses multi-threading by default)
-        m: Truncation level (must be positive integer)
-        threaded: If True (default), use multi-threading for batch processing.
-                 Ignored for single path input.
+        path: (N, d) path, or (N, d, B) batch of B paths. float32 is kept, other
+            types are converted to float64.
+        m: truncation level (>= 1).
+        threaded: use Julia threads across the batch.
 
     Returns:
-        - Single path (N, d): Returns (d + d^2 + ... + d^m,) array
-        - Batch (N, d, B): Returns (d + d^2 + ... + d^m, B) array where
-          each column is the signature of one path
+        (L,) for one path, (L, B) for a batch, L = d + d^2 + ... + d^m.
 
-    Examples:
-        >>> import chen
-        >>> import numpy as np
-
-        # Single path
-        >>> path = np.random.randn(100, 3)
-        >>> signature = chen.sig(path, m=4)
-        >>> signature.shape
-        (120,)  # 3 + 9 + 27 + 81
-
-        # Batch of paths (with float32)
-        >>> paths = np.random.randn(100, 3, 50).astype(np.float32)
-        >>> signatures = chen.sig(paths, m=4, threaded=True)
-        >>> signatures.shape
-        (120, 50)  # (sig_length, batch_size)
-
-    Raises:
-        ValueError: If path has fewer than 2 points or m is not positive
+    Example:
+        >>> chen.sig(np.random.randn(100, 3), 4).shape
+        (120,)
     """
-    # Convert to numpy array and preserve float dtype (float32/float64)
-    arr = np.asarray(path)
-
-    # Default to float64 for integer or non-float types
-    if not np.issubdtype(arr.dtype, np.floating):
-        arr = arr.astype(np.float64)
-
-    # Ensure contiguous memory layout
-    arr = np.ascontiguousarray(arr)
-
-    # Call Julia function (dispatch handles 2D vs 3D)
-    # Only pass threaded kwarg for batch (3D) case
-    kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
-    res = jl.ChenSignatures.sig(arr, m, **kwargs)
-
-    # Convert back to numpy
-    return np.asarray(res)
+    arr, prec = _as_path(path)
+    m = _check_level(m)
+    N, d = arr.shape[:2]
+    B = arr.shape[2] if arr.ndim == 3 else 0
+    L = sig_length(d, m)
+    out = np.empty((L, B) if B else (L,), dtype=arr.dtype, order="F")
+    _api().sig(prec, out.ctypes.data, arr.ctypes.data, N, d, B, m, int(bool(threaded)))
+    return out
 
 
-def prepare_logsig(d: int, m: int):
+class Basis:
+    """Lyndon basis for `logsig`, from `prepare_logsig(d, m)` (a Julia object)."""
+
+    def __init__(self, d, m):
+        self.d, self.m = int(d), int(m)
+        a = _api()
+        self.handle = _new_handle(a.prepare, self.d, self.m)
+
+    def __repr__(self):
+        return f"chen.Basis(d={self.d}, m={self.m})"
+
+
+def prepare_logsig(d: int, m: int) -> Basis:
     """
-    Precompute and cache the Lyndon basis and projection matrix for log-signature.
-
-    This wraps the Julia function `ChenSignatures.prepare(d, m)`, which returns a
-    `BasisCache` object containing:
-        - d: path dimension
-        - m: truncation level
-        - lynds: Lyndon words
-        - L: projection matrix
-
-    Args:
-        d: path dimension (must be a positive integer)
-        m: truncation level (must be a positive integer)
-
-    Returns:
-        A Julia `BasisCache` object that can be reused in subsequent `logsig` calls.
+    Precompute the Lyndon basis for dimension d and level m (like
+    `iisignature.prepare`). Reuse the result across `logsig` calls.
     """
-    if d <= 0:
-        raise ValueError("Dimension d must be a positive integer")
-    if m <= 0:
-        raise ValueError("Truncation level m must be a positive integer")
+    return Basis(d, m)
 
-    # Calls the Julia function:
-    #   function prepare(d::Int, m::Int)::BasisCache
-    return jl.ChenSignatures.prepare(d, m)
+
+def _logsig_length(basis, coords_code):
+    n = _ct.c_int64(0)
+    _api().logsig_length(basis.handle.h, coords_code, _ct.byref(n))
+    return n.value
+
+
+_COORDS = {"lyndon": 1, "words": 2, "expanded": 3}
 
 
 def logsig(path, basis, threaded: bool = True, coords: str = "lyndon") -> np.ndarray:
     """
-    Compute the log-signature of a path or batch of paths using a precomputed basis.
-
-    This wraps the Julia functions:
-        ChenSignatures.logsig(path::AbstractMatrix, basis::BasisCache)
-        ChenSignatures.logsig(paths::AbstractArray{T,3}, basis::BasisCache)
-
-    It is analogous to `iisignature.logsig(path, prep)`, where `basis` is the
-    result of `prepare_logsig(d, m)`.
+    Log-signature of a path or batch, with a basis from `prepare_logsig(d, m)`.
 
     Args:
-        path: Array-like input of shape:
-            - (N, d): Single path where N is path length, d is dimension
-            - (N, d, B): Batch of B paths (uses multi-threading by default)
-        basis: Basis object returned by `prepare_logsig(d, m)` (a Julia `BasisCache`).
-        threaded: If True (default), use multi-threading for batch processing.
-                 Ignored for single path input.
-        coords: Coordinates of the output:
-            - "lyndon" (default): Lyndon basis of the free Lie algebra
-              (iisignature's default, pySigLib method=2).
-            - "words": coefficients of the tensor logarithm at the Lyndon words
-              (Signatory's default, pySigLib method=1). Same length.
-            - "expanded": the full tensor logarithm, same length as `sig`.
+        path: (N, d) path or (N, d, B) batch.
+        basis: result of `prepare_logsig(d, m)`.
+        threaded: use Julia threads across the batch.
+        coords: "lyndon" (Lyndon basis, iisignature's default), "words"
+            (coefficients of the tensor logarithm at the Lyndon words, Signatory's
+            default) or "expanded" (the full tensor logarithm, length of `sig`).
 
     Returns:
-        - Single path (N, d): Returns (L,) array of log-signature coefficients
-        - Batch (N, d, B): Returns (L, B) array where each column is the
-          log-signature of one path (L = number of Lyndon words)
-
-    Examples:
-        >>> import chen
-        >>> import numpy as np
-
-        # Single path
-        >>> path = np.random.randn(100, 3)
-        >>> basis = chen.prepare_logsig(3, 4)
-        >>> logsig = chen.logsig(path, basis)
-        >>> logsig.shape
-        (32,)  # Much more compact than sig (32 vs 120)
-
-        # Batch of paths (with float32)
-        >>> paths = np.random.randn(100, 3, 50).astype(np.float32)
-        >>> logsigs = chen.logsig(paths, basis, threaded=True)
-        >>> logsigs.shape
-        (32, 50)  # (num_lyndon_words, batch_size)
+        (L,) for one path, (L, B) for a batch.
     """
-    # Convert to numpy array and preserve float dtype (float32/float64)
-    arr = np.asarray(path)
-
-    # Default to float64 for integer or non-float types
-    if not np.issubdtype(arr.dtype, np.floating):
-        arr = arr.astype(np.float64)
-
-    # Ensure contiguous memory layout
-    arr = np.ascontiguousarray(arr)
-
-    # Validate dimensions
-    if arr.ndim == 2:
-        d = arr.shape[1]
-    elif arr.ndim == 3:
-        d = arr.shape[1]
-    else:
-        raise ValueError(f"`path` must be 2D (N, d) or 3D (N, d, B); got shape {arr.shape}")
-
-    # Sanity check: match Python path dimension with Julia BasisCache.d if available
-    basis_d = getattr(basis, "d", None)
-    if basis_d is not None and basis_d != d:
+    if coords not in _COORDS:
+        raise ValueError(f"coords must be 'lyndon', 'words' or 'expanded', got {coords!r}")
+    arr, prec = _as_path(path)
+    N, d = arr.shape[:2]
+    if d != basis.d:
         raise ValueError(
-            f"Dimension mismatch between path (d={d}) and basis (d={basis_d}). "
+            f"Dimension mismatch between path (d={d}) and basis (d={basis.d}). "
             "Did you call prepare_logsig with the correct dimension?"
         )
-
-    # Call Julia function (dispatch handles 2D vs 3D)
-    # Only pass threaded kwarg for batch (3D) case
-    if coords not in ("lyndon", "words", "expanded"):
-        raise ValueError(f"coords must be 'lyndon', 'words' or 'expanded', got {coords!r}")
-    kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
-    kwargs["coords"] = jl.Symbol(coords)
-    res = jl.ChenSignatures.logsig(arr, basis, **kwargs)
-
-    # Convert Julia vector to numpy array
-    return np.asarray(res)
+    B = arr.shape[2] if arr.ndim == 3 else 0
+    c = _COORDS[coords]
+    L = _logsig_length(basis, c)
+    out = np.empty((L, B) if B else (L,), dtype=arr.dtype, order="F")
+    _api().logsig(prec, out.ctypes.data, arr.ctypes.data, N, d, B, basis.handle.h, c, int(bool(threaded)))
+    return out
 
 
 def rolling_sig(path, m: int, window_size: int, *, stride: int = 1, threaded: bool = True) -> np.ndarray:
     """
-    Compute signatures over rolling windows using the batched Julia kernel.
-
-    Args:
-        path: Array-like of shape (N, d).
-        m: Truncation level (positive integer).
-        window_size: Window length (2 <= window_size <= N).
-        stride: Step between windows (default 1).
-        threaded: If True (default), use the threaded batched implementation.
+    Signatures of the rolling windows path[i*stride : i*stride + window_size].
 
     Returns:
-        Array of shape (sig_dim, num_windows) where sig_dim = d + ... + d^m.
+        (L, num_windows), num_windows = (N - window_size) // stride + 1.
     """
     arr = np.asarray(path)
     if arr.ndim != 2:
         raise ValueError(f"`path` must be 2D (N, d); got shape {arr.shape}")
+    N = arr.shape[0]
+    if not 2 <= window_size <= N:
+        raise ValueError(f"window_size must be in [2, N={N}], got {window_size}")
+    if stride < 1:
+        raise ValueError(f"stride must be at least 1, got {stride}")
+    win = np.lib.stride_tricks.sliding_window_view(arr, window_size, axis=0)[::stride]  # (W, d, w)
+    return sig(np.transpose(win, (2, 1, 0)), m, threaded=threaded)
 
-    if not np.issubdtype(arr.dtype, np.floating):
-        arr = arr.astype(np.float64)
-    arr = np.ascontiguousarray(arr)
 
-    res = jl.ChenSignatures.rolling_sig(
-        arr,
-        int(m),
-        int(window_size),
-        stride=int(stride),
-        threaded=bool(threaded),
-    )
-    return np.asarray(res)
+# ============================================================================
+# Signature kernels
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class LinearKernel:
+    """κ(a, b) = <a, b>: the plain signature kernel. The default."""
+
+
+@dataclass(frozen=True)
+class RBFKernel:
+    """κ(a, b) = exp(-|a - b|² / 2σ²): the signature kernel of the RBF-lifted paths."""
+    sigma: float
+
+    def __post_init__(self):
+        if not self.sigma > 0:
+            raise ValueError(f"RBFKernel: sigma must be positive, got {self.sigma}")
+
+
+def _kernel_code(static_kernel):
+    if static_kernel is None or isinstance(static_kernel, LinearKernel):
+        return 0, 1.0
+    if isinstance(static_kernel, RBFKernel):
+        return 1, float(static_kernel.sigma)
+    raise TypeError(f"static_kernel must be LinearKernel() or RBFKernel(sigma), got {static_kernel!r}")
+
+
+def sig_gram(X, Y=None, *, dyadic_order: int = 0, static_kernel=None, m: int = None,
+             threaded: bool = True) -> np.ndarray:
+    """
+    Gram matrix of signature kernels between two batches of paths.
+
+    By default the untruncated kernel, from the Goursat PDE (Salvi et al. 2021), with
+    each increment split into 2^dyadic_order pieces and an optional static kernel
+    (`LinearKernel()`, `RBFKernel(sigma)`). With `m`, the kernel of the signatures
+    truncated at level m.
+
+    Args:
+        X: (N, d, Bx) batch; Y: (M, d, By) batch, or None for the symmetric Gram of X.
+
+    Returns:
+        (Bx, By) array, K[i, j] = k(X[:, :, i], Y[:, :, j]).
+    """
+    Xa, prec = _as_path(X, (3,), "X")
+    sym = Y is None
+    if sym:
+        Ya = Xa
+    else:
+        Ya, precY = _as_path(Y, (3,), "Y")
+        if precY != prec:
+            Ya, precY = _as_path(Ya.astype(Xa.dtype), (3,), "Y")
+        if Ya.shape[1] != Xa.shape[1]:
+            raise ValueError(f"X and Y must have the same dimension d, got {Xa.shape[1]} and {Ya.shape[1]}")
+    if dyadic_order < 0:
+        raise ValueError(f"dyadic_order must be non-negative, got {dyadic_order}")
+    kcode, sigma = _kernel_code(static_kernel)
+    if m is not None and kcode != 0:
+        raise ValueError("static_kernel applies to the untruncated kernel only, not with m")
+    mm = 0 if m is None else _check_level(m)
+    Nx, d, Bx = Xa.shape
+    Ny, _, By = Ya.shape
+    out = np.empty((Bx, By), dtype=Xa.dtype, order="F")
+    _api().sig_gram(prec, out.ctypes.data, Xa.ctypes.data, Nx, Bx, Ya.ctypes.data, Ny, By, d,
+                    int(sym), int(dyadic_order), kcode, sigma, mm, int(bool(threaded)))
+    return out
+
+
+def sig_kernel(x, y, *, dyadic_order: int = 0, static_kernel=None, m: int = None) -> float:
+    """
+    Signature kernel k(x, y) of two paths (N, d) and (M, d); keywords as `sig_gram`.
+    """
+    xa, _ = _as_path(x, (2,), "x")
+    ya, _ = _as_path(y, (2,), "y")
+    K = sig_gram(xa[:, :, None], ya[:, :, None].astype(xa.dtype), dyadic_order=dyadic_order,
+                 static_kernel=static_kernel, m=m, threaded=False)
+    return float(K[0, 0])
+
+
+# ============================================================================
+# Augmentations (NumPy; same definitions as the Julia package)
+# ============================================================================
+
 
 def time_augment(path, *, Tspan=1.0, times=None) -> np.ndarray:
     """
-    Add a monotonically increasing time coordinate as the first column of the path.
-
-    Args:
-        path: Array-like of shape (N, d) or (N, d, B).
-        Tspan: Total time horizon for the implicit grid (default 1.0). Ignored when `times` is provided.
-        times: Optional length-N vector of time stamps.
+    Prepend a time coordinate: a uniform grid on [0, Tspan], or `times` (length N).
 
     Returns:
-        Array with shape (N, d+1) or (N, d+1, B).
+        (N, d+1) or (N, d+1, B).
     """
     arr = np.asarray(path)
     if arr.ndim not in (2, 3):
         raise ValueError(f"`path` must be 2D (N, d) or 3D (N, d, B); got shape {arr.shape}")
-
-    if not np.issubdtype(arr.dtype, np.floating):
+    if arr.dtype not in (np.float32, np.float64):
         arr = arr.astype(np.float64)
-    arr = np.ascontiguousarray(arr)
-
-    times_arr = None
-    if times is not None:
-        times_arr = np.asarray(times, dtype=arr.dtype)
-        if times_arr.shape[0] != arr.shape[0]:
-            raise ValueError(f"`times` length ({times_arr.shape[0]}) must match N={arr.shape[0]}")
-
-    res = jl.ChenSignatures.time_augment(arr, Tspan=Tspan, times=times_arr)
-    return np.asarray(res)
+    N = arr.shape[0]
+    if times is None:
+        t = np.linspace(0.0, Tspan, N, dtype=arr.dtype)
+    else:
+        t = np.asarray(times, dtype=arr.dtype)
+        if t.shape != (N,):
+            raise ValueError(f"`times` length ({t.shape[0]}) must match N={N}")
+    tcol = np.broadcast_to(t.reshape((N, 1) + (1,) * (arr.ndim - 2)), (N, 1) + arr.shape[2:])
+    return np.concatenate([tcol, arr], axis=1)
 
 
 def lead_lag(path) -> np.ndarray:
     """
-    Lead–lag transform of a path.
-
-    Args:
-        path: Array-like of shape (N, d) or (N, d, B).
-
-    Returns:
-        Array with shape (2N-1, 2d) or (2N-1, 2d, B).
+    Lead–lag transform: (N, d) -> (2N-1, 2d), points (x_i, x_i), (x_i, x_{i+1}), ...
+    (and (N, d, B) -> (2N-1, 2d, B)).
     """
     arr = np.asarray(path)
     if arr.ndim not in (2, 3):
         raise ValueError(f"`path` must be 2D (N, d) or 3D (N, d, B); got shape {arr.shape}")
-
-    if not np.issubdtype(arr.dtype, np.floating):
+    if arr.dtype not in (np.float32, np.float64):
         arr = arr.astype(np.float64)
-    arr = np.ascontiguousarray(arr)
-
-    res = jl.ChenSignatures.lead_lag(arr)
-    return np.asarray(res)
+    rep = np.repeat(arr, 2, axis=0)
+    return np.concatenate([rep[:-1], rep[1:]], axis=1)
 
 
 def sig_time(path, m: int, *, Tspan=1.0, times=None, threaded: bool = True) -> np.ndarray:
-    """
-    Convenience wrapper: time-augment a path then compute its signature.
-    """
-    arr = time_augment(path, Tspan=Tspan, times=times)
-    kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
-    return sig(arr, m, **kwargs)
+    """Signature of the time-augmented path."""
+    return sig(time_augment(path, Tspan=Tspan, times=times), m, threaded=threaded)
 
 
 def sig_leadlag(path, m: int, *, threaded: bool = True) -> np.ndarray:
-    """
-    Convenience wrapper: apply lead–lag then compute signature.
-    """
-    arr = lead_lag(path)
-    kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
-    return sig(arr, m, **kwargs)
+    """Signature of the lead–lag transformed path."""
+    return sig(lead_lag(path), m, threaded=threaded)
 
 
 def logsig_time(path, basis, *, Tspan=1.0, times=None, threaded: bool = True) -> np.ndarray:
-    """
-    Convenience wrapper: time-augment a path then compute its log-signature.
-    """
-    arr = time_augment(path, Tspan=Tspan, times=times)
-    kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
-    return logsig(arr, basis, **kwargs)
+    """Log-signature of the time-augmented path."""
+    return logsig(time_augment(path, Tspan=Tspan, times=times), basis, threaded=threaded)
 
 
 def logsig_leadlag(path, basis, *, threaded: bool = True) -> np.ndarray:
-    """
-    Convenience wrapper: apply lead–lag then compute log-signature.
-    """
-    arr = lead_lag(path)
-    kwargs = {"threaded": threaded} if arr.ndim == 3 else {}
-    return logsig(arr, basis, **kwargs)
+    """Log-signature of the lead–lag transformed path."""
+    return logsig(lead_lag(path), basis, threaded=threaded)
 
-
-# ============================================================================
-# Package metadata
-# ============================================================================
 
 __all__ = [
     '__version__',
     'sig',
+    'sig_length',
     'logsig',
     'prepare_logsig',
     'rolling_sig',
+    'sig_kernel',
+    'sig_gram',
+    'LinearKernel',
+    'RBFKernel',
     'time_augment',
     'lead_lag',
     'sig_time',
     'sig_leadlag',
     'logsig_time',
     'logsig_leadlag',
+    'install_gpu',
+    'Basis',
+    'JuliaError',
 ]
