@@ -124,12 +124,13 @@ def test_torch_sig_gram_cuda_matches_cpu():
     X = torch.tensor(np.transpose(paths(20, 3, 5), (2, 0, 1)))
     Y = torch.tensor(np.transpose(paths(15, 3, 4), (2, 0, 1)))
     W = torch.randn(5, 4, dtype=torch.float64)
-    xc, yc = X.clone().requires_grad_(), Y.clone().requires_grad_()
-    (ct.sig_gram(xc, yc) * W).sum().backward()
-    xg, yg = X.cuda().requires_grad_(), Y.cuda().requires_grad_()
-    K = ct.sig_gram(xg, yg)
-    (K * W.cuda()).sum().backward()
-    assert K.is_cuda
-    np.testing.assert_allclose(K.detach().cpu().numpy(), ct.sig_gram(X, Y).numpy(), rtol=1e-12)
-    np.testing.assert_allclose(xg.grad.cpu().numpy(), xc.grad.numpy(), rtol=1e-10, atol=1e-14)
-    np.testing.assert_allclose(yg.grad.cpu().numpy(), yc.grad.numpy(), rtol=1e-10, atol=1e-14)
+    for kw in ({}, {"static_kernel": chen.RBFKernel(0.3), "dyadic_order": 1}):
+        xc, yc = X.clone().requires_grad_(), Y.clone().requires_grad_()
+        (ct.sig_gram(xc, yc, **kw) * W).sum().backward()
+        xg, yg = X.cuda().requires_grad_(), Y.cuda().requires_grad_()
+        K = ct.sig_gram(xg, yg, **kw)
+        (K * W.cuda()).sum().backward()
+        assert K.is_cuda
+        np.testing.assert_allclose(K.detach().cpu().numpy(), ct.sig_gram(X, Y, **kw).numpy(), rtol=1e-12)
+        np.testing.assert_allclose(xg.grad.cpu().numpy(), xc.grad.numpy(), rtol=1e-10, atol=1e-14)
+        np.testing.assert_allclose(yg.grad.cpu().numpy(), yc.grad.numpy(), rtol=1e-10, atol=1e-14)

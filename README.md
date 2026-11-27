@@ -57,7 +57,7 @@ Python bindings: [`chen-signatures`](./python).
 
 - More static kernels (Matérn, rational quadratic, polynomial)
 - Neural / rough CDEs
-- GPU: static kernels other than linear, `sig`/`logsig` on GPU
+- GPU: static kernels other than linear and RBF, `sig`/`logsig` on GPU
 
 ## Citation
 
