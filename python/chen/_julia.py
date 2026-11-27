@@ -111,12 +111,21 @@ def _start_julia():
         signal.signal(signal.SIGINT, py_sigint if py_sigint is not None else signal.default_int_handler)
     lib.jl_atexit_hook.argtypes = [c.c_int]
     lib.jl_atexit_hook.restype = None
-    atexit.register(lib.jl_atexit_hook, 0)
+    atexit.register(_shutdown, lib)
     # Julia can be initialised once per process: stop a later `import juliacall` from
     # initialising it again (it raises instead of crashing). To use juliacall together
     # with chen, import juliacall before chen's first computation.
     os.environ["PYTHON_JULIACALL_INIT"] = "no"
     return lib
+
+
+def _shutdown(lib):
+    """Stop Julia at exit. Disable the entry points first: Handles that Python
+    finalises later (bases, pullbacks still alive at shutdown) must not call into a
+    runtime that is gone."""
+    global _api, _gpu
+    _api = _gpu = None
+    lib.jl_atexit_hook(0)
 
 
 def _eval(lib, code):
