@@ -3,7 +3,6 @@
 import pytest
 import numpy as np
 
-# Import chen (pulls in juliacall) before torch to avoid juliacall torch warning
 import chen
 
 # Skip entire module if torch is not installed

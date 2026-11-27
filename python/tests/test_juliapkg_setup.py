@@ -49,8 +49,8 @@ def test_juliapkg_setup():
     # Test 3: Check Julia environment status
     print("Test 3: Checking Julia environment...")
     try:
-        # Import juliacall which will trigger juliapkg setup
-        from juliacall import Main as jl
+        # juliacall is optional for chen (chen starts libjulia itself)
+        jl = pytest.importorskip("juliacall").Main
         
         # Check if ChenSignatures can be loaded
         jl.seval("using ChenSignatures")
