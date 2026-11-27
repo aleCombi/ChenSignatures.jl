@@ -192,9 +192,14 @@ The rule is the same ChainRules rule as on the CPU, so Zygote, Enzyme and Moonca
 use it. (Enzyme needs `set_runtime_activity(Reverse)` for CuArray broadcasts in the
 surrounding loss, not for the kernel.)
 
-Limits: the linear static kernel only (other static kernels raise an error); the
-shorter path may have at most 1023 increments after dyadic refinement; the gradient
-stores the PDE grid, `(n+1)(m+1)` values per pair.
+Static kernels: `LinearKernel()` and `RBFKernel(σ)`, e.g.
+`sig_gram(X, Y; static_kernel = RBFKernel(0.5))`; others raise an error. The RBF
+kernel costs 1.1–1.35× the linear one in Float32 and 2–3× in Float64 (an RTX 2060
+runs Float64 `exp` at 1/32 of the Float32 rate). Against pySigLib's GPU RBF Gram
+(their σ is our 2σ²) it is 28–49× faster in Float32 and 5–10× in Float64.
+
+Limits: the shorter path may have at most 1023 increments after dyadic refinement;
+the gradient stores the PDE grid, `(n+1)(m+1)` values per pair.
 
 On an RTX 2060 (Float32, d = 3), the gradient of `sum(W .* sig_gram(X, Y))` takes
 6 ms for 4096 pairs of length 64 and 21 ms for 1024 pairs of length 256: 6–14× faster

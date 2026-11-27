@@ -86,7 +86,7 @@ K.sum().backward()
 ```
 
 CUDA tensors run `sig_gram` / `sig_kernel` on the GPU without copying to the host
-(linear static kernel). This needs CUDA.jl, installed once with `chen.install_gpu()`.
+(linear or RBF static kernel). This needs CUDA.jl, installed once with `chen.install_gpu()`.
 The first GPU call in a process loads CUDA.jl and compiles the kernels (10–30 s).
 Loading GPU support also switches torch's autograd to run backward passes on the
 calling thread (`torch.autograd.set_multithreading_enabled(False)`): Julia cannot be
@@ -184,7 +184,7 @@ finishes before the `KeyboardInterrupt` is raised.
 
 - First use in a new environment is slow (Julia installation and precompilation)
 - Julia starts on the first computation of a process (under a second)
-- On GPU: only `sig_gram` / `sig_kernel`, linear static kernel; the first GPU call compiles kernels
+- On GPU: only `sig_gram` / `sig_kernel`, linear or RBF static kernel; the first GPU call compiles kernels
 
 ---
 

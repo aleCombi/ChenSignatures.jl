@@ -2,6 +2,8 @@
 # implementation of the GPU array interface, so CI covers it without a GPU.
 using JLArrays, KernelAbstractions, GPUArraysCore, ChainRulesCore, Zygote, Random, Test
 
+struct _OtherKernel <: ChenSignatures.StaticKernel end
+
 @testset "GPU sig_gram (KernelAbstractions ext, JLArrays)" begin
     Random.seed!(7)
     paths(N, d, B) = 0.1 .* cumsum(randn(N, d, B); dims = 1)
@@ -43,9 +45,37 @@ using JLArrays, KernelAbstractions, GPUArraysCore, ChainRulesCore, Zygote, Rando
         @test Array(g[2]) ≈ gc[2] rtol = 1e-10
     end
 
+    @testset "RBF static kernel: Nx=$Nx Ny=$Ny d=$d λ=$λ σ=$σ" for (Nx, Ny, d, λ, σ) in
+            ((10, 10, 3, 0, 0.7), (13, 8, 2, 0, 1.3), (7, 11, 4, 1, 0.5), (6, 6, 3, 2, 1.0), (9, 5, 1, 1, 0.4))
+        κ = RBFKernel(σ)
+        X, Y, W = 3 .* paths(Nx, d, 3), 3 .* paths(Ny, d, 4), randn(3, 4)
+        K = sig_gram(JLArray(X), JLArray(Y); dyadic_order = λ, static_kernel = κ)
+        @test Array(K) ≈ sig_gram(X, Y; dyadic_order = λ, static_kernel = κ) rtol = 1e-12
+        _, pb = ChainRulesCore.rrule(sig_gram, JLArray(X), JLArray(Y); dyadic_order = λ, static_kernel = κ)
+        _, X̄, Ȳ = pb(JLArray(W))
+        _, pbc = ChainRulesCore.rrule(sig_gram, X, Y; dyadic_order = λ, static_kernel = κ)
+        _, cX̄, cȲ = pbc(W)
+        @test Array(X̄) ≈ cX̄ rtol = 1e-10
+        @test Array(Ȳ) ≈ cȲ rtol = 1e-10
+    end
+
+    @testset "RBF: symmetric and Float32" begin
+        κ = RBFKernel(0.8)
+        X, W = 3 .* paths(8, 2, 4), randn(4, 4)
+        @test Array(sig_gram(JLArray(X); static_kernel = κ, dyadic_order = 1)) ≈
+              sig_gram(X; static_kernel = κ, dyadic_order = 1) rtol = 1e-12
+        _, pb = ChainRulesCore.rrule(sig_gram, JLArray(X); static_kernel = κ, dyadic_order = 1)
+        _, pbc = ChainRulesCore.rrule(sig_gram, X; static_kernel = κ, dyadic_order = 1)
+        @test Array(pb(JLArray(W))[2]) ≈ pbc(W)[2] rtol = 1e-10
+        X32 = Float32.(X)
+        K32 = sig_gram(JLArray(X32); static_kernel = κ)
+        @test eltype(K32) == Float32
+        @test Array(K32) ≈ sig_gram(X; static_kernel = κ) rtol = 1e-4
+    end
+
     @testset "unsupported arguments" begin
         X = JLArray(paths(5, 2, 2))
-        @test_throws ArgumentError sig_gram(X, X; static_kernel = RBFKernel(1.0))
+        @test_throws ArgumentError sig_gram(X, X; static_kernel = _OtherKernel())
         @test_throws ArgumentError sig_gram(X; dyadic_order = -1)
         @test_throws DimensionMismatch sig_gram(X, JLArray(paths(5, 3, 2)))
     end
